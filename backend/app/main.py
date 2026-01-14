@@ -2,20 +2,27 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Any, List
+from uuid import uuid4
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from PIL import Image, ImageDraw, ImageFont
+import fitz  # PyMuPDF
 
 # Third-party parser used elsewhere in the repo
 from agentic_doc.parse import parse
+from agentic_doc.config import VisualizationConfig
 
 # Constants
 BASE_DIR = Path(__file__).parent.parent
 DEFAULT_UPLOAD_DIR = BASE_DIR / "uploads"
+STATIC_DIR = BASE_DIR / "static"
+VIZ_DIR = STATIC_DIR / "visualizations"
 MAX_FILE_BYTES = 25 * 1024 * 1024  # 25 MB safeguard
 
 
@@ -23,6 +30,7 @@ class ParseResponse(BaseModel):
     """Response model to wrap raw parser output."""
 
     data: Any
+    visualizations: List[str] | None = None
 
 
 def ensure_upload_dir() -> Path:
@@ -54,6 +62,8 @@ def create_app() -> FastAPI:
     load_dotenv()
 
     app = FastAPI(title="PDF Parser API", version="0.1.0")
+    STATIC_DIR.mkdir(parents=True, exist_ok=True)
+    VIZ_DIR.mkdir(parents=True, exist_ok=True)
 
     # CORS – allow local dev frontends; adjust origins as needed.
     env_origin = os.getenv("FRONTEND_ORIGIN")
@@ -68,6 +78,87 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    app.mount(
+        "/static",
+        StaticFiles(directory=STATIC_DIR),
+        name="static",
+    )
+
+    def build_visualizations(pdf_path: Path, parsed_docs: Any) -> List[str]:
+        """Generate visualization images (boxed/labelled) and return URLs."""
+        if not parsed_docs or len(parsed_docs) == 0:
+            return []
+
+        parsed_doc = parsed_docs[0]
+        viz_subdir = VIZ_DIR / f"{pdf_path.stem}_{uuid4().hex}"
+        viz_subdir.mkdir(parents=True, exist_ok=True)
+
+        viz_config = VisualizationConfig(
+            thickness=3,
+            text_bg_opacity=0.85,
+            padding=4,
+            font_scale=0.5,
+        )
+        color_map = {k: (v[2], v[1], v[0]) for k, v in viz_config.color_map.items()}  # BGR->RGB
+        font = ImageFont.load_default()
+
+        try:
+            with fitz.open(pdf_path) as doc:
+                for page_idx, page in enumerate(doc):
+                    pix = page.get_pixmap(dpi=144, colorspace=fitz.csRGB)
+                    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                    draw = ImageDraw.Draw(img, "RGBA")
+
+                    page_chunks = [
+                        c for c in parsed_doc.chunks if c.grounding and c.grounding[0].page == page_idx
+                    ]
+                    for c in page_chunks:
+                        color = color_map.get(c.chunk_type, (0, 122, 255))
+                        for g in c.grounding:
+                            if not g.box:
+                                continue
+                            x0 = int(g.box.l * pix.width)
+                            y0 = int(g.box.t * pix.height)
+                            x1 = int(g.box.r * pix.width)
+                            y1 = int(g.box.b * pix.height)
+
+                            label = str(c.chunk_type)
+                            text_bbox = draw.textbbox((0, 0), label, font=font)
+                            text_w = text_bbox[2] - text_bbox[0]
+                            text_h = text_bbox[3] - text_bbox[1]
+                            label_x = x0
+                            label_y = max(0, y0 - text_h - 6)
+
+                            # label background
+                            draw.rectangle(
+                                [
+                                    (label_x - 4, label_y - 2),
+                                    (label_x + text_w + 4, label_y + text_h + 2),
+                                ],
+                                fill=(*color, int(viz_config.text_bg_opacity * 255)),
+                            )
+                            # text
+                            draw.text((label_x, label_y), label, fill=(255, 255, 255), font=font)
+                            # box
+                            for offset in range(viz_config.thickness):
+                                draw.rectangle(
+                                    [(x0 - offset, y0 - offset), (x1 + offset, y1 + offset)],
+                                    outline=color,
+                                    width=1,
+                                )
+
+                    out_path = viz_subdir / f"{pdf_path.stem}_viz_page_{page_idx}.png"
+                    img.save(out_path)
+        except Exception as exc:
+            print(f"Visualization failed: {exc}")
+            return []
+
+        urls: List[str] = []
+        for img_path in sorted(viz_subdir.glob("*.png")):
+            relative = img_path.relative_to(STATIC_DIR)
+            urls.append(f"/static/{relative.as_posix()}")
+        return urls
 
     @app.get("/healthz")
     def healthcheck() -> dict[str, str]:
@@ -89,7 +180,8 @@ def create_app() -> FastAPI:
         try:
             parsed = parse(str(temp_path))
             payload = jsonable_encoder(parsed)
-            return JSONResponse(content={"data": payload})
+            viz_urls = build_visualizations(temp_path, parsed)
+            return JSONResponse(content={"data": payload, "visualizations": viz_urls})
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Failed to parse PDF: {exc}")
         finally:

@@ -34,6 +34,7 @@ backend/venv/
 
 # Local uploads/temp
 backend/uploads/
+backend/static/
 
 # Project directories to ignore
 agentic_rag/

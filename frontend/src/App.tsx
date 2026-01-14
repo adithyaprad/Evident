@@ -1,4 +1,4 @@
-import type { ChangeEvent, DragEvent } from 'react'
+import type { ChangeEvent, DragEvent, MouseEvent } from 'react'
 import { useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -7,6 +7,7 @@ import './App.css'
 
 type ParseResponse = {
   data: unknown
+  visualizations?: string[]
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
@@ -18,7 +19,10 @@ function App() {
   const [error, setError] = useState<string | null>(null)
   const [parsedData, setParsedData] = useState<unknown | null>(null)
   const [activeTab, setActiveTab] = useState<'json' | 'markdown'>('json')
+  const [visualizations, setVisualizations] = useState<string[]>([])
+  const [splitPercent, setSplitPercent] = useState(50)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const layoutRef = useRef<HTMLDivElement | null>(null)
 
   const prettyJson = useMemo(
     () => (parsedData ? JSON.stringify(parsedData, null, 2) : ''),
@@ -90,6 +94,7 @@ function App() {
     setLoading(true)
     setError(null)
     setParsedData(null)
+    setVisualizations([])
 
     const form = new FormData()
     form.append('file', file)
@@ -109,6 +114,7 @@ function App() {
 
       const body = (await res.json()) as ParseResponse
       setParsedData(body?.data ?? body)
+      setVisualizations(body?.visualizations ?? [])
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Unexpected error occurred.'
@@ -129,6 +135,33 @@ function App() {
     }
   }
 
+  const getImageUrl = (src: string) =>
+    src.startsWith('http') ? src : `${API_BASE}${src}`
+
+  const onDividerMouseDown = (event: MouseEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    const startX = event.clientX
+    const startPercent = splitPercent
+    const layout = layoutRef.current
+    if (!layout) return
+    const rect = layout.getBoundingClientRect()
+
+    const onMove = (moveEvent: MouseEvent) => {
+      const delta = moveEvent.clientX - startX
+      const deltaPercent = (delta / rect.width) * 100
+      const next = Math.min(70, Math.max(30, startPercent + deltaPercent))
+      setSplitPercent(next)
+    }
+
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
   return (
     <div className="page">
       <header className="hero">
@@ -136,124 +169,180 @@ function App() {
           <p className="eyebrow">Grounded QA — raw ingest</p>
           <h1>Upload a PDF and inspect the parser output</h1>
           <p className="sub">
-            Uses the existing <code>agentic_doc.parse</code> flow; JSON is
-            pretty-printed as-is for quick inspection.
+            Uses the existing <code>agentic_doc.parse</code> flow; JSON,
+            markdown, and visualization previews.
           </p>
         </div>
       </header>
 
-      <div className="grid">
-        <section className="panel upload-panel">
-          <div
-            className={`dropzone ${isDragging ? 'dragging' : ''}`}
-            onDrop={onDrop}
-            onDragOver={onDragOver}
-            onDragLeave={onDragLeave}
+      {error && <div className="alert error">{error}</div>}
+      {loading && (
+        <div className="loading banner">
+          <div className="spinner" aria-hidden />
+          <p>Parsing PDF…</p>
+        </div>
+      )}
+
+      <div className="app-shell">
+        <aside className="sidebar">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/pdf"
+            onChange={onFileInputChange}
+            hidden
+          />
+          <button
+            className="icon-button"
             onClick={() => fileInputRef.current?.click()}
+            title="Upload PDF"
           >
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="application/pdf"
-              onChange={onFileInputChange}
-              hidden
-            />
-            <div className="dropzone-text">
-              <p className="drop-title">Drop a PDF here or click to browse</p>
-              <p className="drop-sub">Max ~25 MB. One file at a time.</p>
-              {file ? (
-                <p className="file-name">Selected: {file.name}</p>
+            <svg viewBox="0 0 24 24" aria-hidden>
+              <path
+                d="M12 16V7m0 0l-3 3m3-3l3 3M5 17a4 4 0 010-8 5 5 0 019.5-2.5A4 4 0 1118 17H5z"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+          <button
+            className="icon-button"
+            onClick={submit}
+            disabled={loading}
+            title="Parse"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden>
+              <path
+                d="M5 12h14M12 5v14"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+          <button
+            className="icon-button"
+            onClick={() => setFile(null)}
+            title="Clear"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden>
+              <path
+                d="M6 6l12 12M18 6l-12 12"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+        </aside>
+
+        <div className="layout split" ref={layoutRef}>
+          <section
+            className="panel column split-panel"
+            style={{ flexBasis: `${splitPercent}%` }}
+          >
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">Visualizations</p>
+                <h3>Page overlays</h3>
+                {file && <p className="file-chip">{file.name}</p>}
+              </div>
+              <p className="viz-count">
+                {visualizations.length > 0 ? `${visualizations.length} page(s)` : '—'}
+              </p>
+            </div>
+            <div className="viz-board">
+              {visualizations.length > 0 ? (
+                <div className="viz-grid">
+                  {visualizations.map((src) => (
+                    <div className="viz-card" key={src}>
+                      <img src={getImageUrl(src)} alt="Visualization" />
+                    </div>
+                  ))}
+                </div>
               ) : (
-                <p className="file-name muted">No file chosen</p>
+                <p className="placeholder">Upload to view page visualizations.</p>
               )}
             </div>
-          </div>
+          </section>
 
-          <div className="actions">
-            <button className="secondary" onClick={() => setFile(null)}>
-              Clear
-            </button>
-            <button className="primary" onClick={submit} disabled={loading}>
-              {loading ? 'Parsing…' : 'Upload & Parse'}
-            </button>
-          </div>
+          <div
+            className="splitter"
+            onMouseDown={onDividerMouseDown}
+            role="separator"
+            aria-label="Resize panels"
+          />
 
-          {error && <div className="alert error">{error}</div>}
-          {!error && (
-            <div className="hint">
-              The backend endpoint: <code>{API_BASE}/api/parse</code>
-            </div>
-          )}
-
-          {loading && (
-            <div className="loading">
-              <div className="spinner" aria-hidden />
-              <p>Parsing PDF…</p>
-            </div>
-          )}
-        </section>
-
-        <section className="panel viewer">
-          <div className="viewer-header">
-            <div>
-              <p className="eyebrow">Raw parser JSON</p>
-              <h3>Pretty-printed response</h3>
-            </div>
-            <div className="viewer-actions">
-              <div className="tabs">
+          <section
+            className="panel column split-panel"
+            style={{ flexBasis: `${100 - splitPercent}%` }}
+          >
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">Parser output</p>
+                <h3>Pretty-printed response</h3>
+              </div>
+              <div className="viewer-actions">
+                <div className="tabs">
+                  <button
+                    className={`tab ${activeTab === 'json' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('json')}
+                    disabled={!parsedData}
+                  >
+                    JSON
+                  </button>
+                  <button
+                    className={`tab ${activeTab === 'markdown' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('markdown')}
+                    disabled={!parsedData}
+                  >
+                    Markdown
+                  </button>
+                </div>
                 <button
-                  className={`tab ${activeTab === 'json' ? 'active' : ''}`}
-                  onClick={() => setActiveTab('json')}
+                  className="secondary"
+                  onClick={copyCurrent}
                   disabled={!parsedData}
                 >
-                  JSON
-                </button>
-                <button
-                  className={`tab ${activeTab === 'markdown' ? 'active' : ''}`}
-                  onClick={() => setActiveTab('markdown')}
-                  disabled={!parsedData}
-                >
-                  Markdown
+                  {activeTab === 'json' ? 'Copy JSON' : 'Copy Markdown'}
                 </button>
               </div>
-              <button
-                className="secondary"
-                onClick={copyCurrent}
-                disabled={!parsedData}
-              >
-                {activeTab === 'json' ? 'Copy JSON' : 'Copy Markdown'}
-              </button>
             </div>
-          </div>
-          <div
-            className={`json-viewer ${
-              activeTab === 'markdown' ? 'markdown-mode' : ''
-            }`}
-          >
-            {activeTab === 'json' ? (
-              prettyJson ? (
-                <pre>{prettyJson}</pre>
+            <div
+              className={`json-viewer ${
+                activeTab === 'markdown' ? 'markdown-mode' : ''
+              }`}
+            >
+              {activeTab === 'json' ? (
+                prettyJson ? (
+                  <pre>{prettyJson}</pre>
+                ) : (
+                  <p className="placeholder">
+                    Upload a PDF to view the raw parse output.
+                  </p>
+                )
+              ) : markdownText ? (
+                <div className="markdown-body">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    rehypePlugins={[rehypeRaw]}
+                  >
+                    {markdownText}
+                  </ReactMarkdown>
+                </div>
               ) : (
                 <p className="placeholder">
-                  Upload a PDF to view the raw parse output.
+                  No markdown found in the parser response.
                 </p>
-              )
-            ) : markdownText ? (
-              <div className="markdown-body">
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  rehypePlugins={[rehypeRaw]}
-                >
-                  {markdownText}
-                </ReactMarkdown>
-              </div>
-            ) : (
-              <p className="placeholder">
-                No markdown found in the parser response.
-              </p>
-            )}
-          </div>
-        </section>
+              )}
+            </div>
+          </section>
+        </div>
       </div>
     </div>
   )
