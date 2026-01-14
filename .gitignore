@@ -1,0 +1,39 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.swp
+*.log
+
+.DS_Store
+.vscode/
+.idea/
+
+.env
+.venv/
+venv/
+env/
+
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+build/
+dist/
+
+# Node / frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# Python venvs
+backend/.venv/
+backend/venv/
+
+# Local uploads/temp
+backend/uploads/
+
+# Project directories to ignore
+agentic_rag/

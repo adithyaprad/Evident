@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+agentic-doc
+langchain  # kept for parity; remove if unused later
+langchain-google-genai
+langchain-openai
+langchain-community
+chromadb
+python-dotenv
