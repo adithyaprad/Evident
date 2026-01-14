@@ -101,7 +101,10 @@ def create_app() -> FastAPI:
             font_scale=0.5,
         )
         color_map = {k: (v[2], v[1], v[0]) for k, v in viz_config.color_map.items()}  # BGR->RGB
-        font = ImageFont.load_default()
+        try:
+            font = ImageFont.truetype("DejaVuSans-Bold.ttf", 14)
+        except Exception:
+            font = ImageFont.load_default()
 
         try:
             with fitz.open(pdf_path) as doc:
@@ -123,23 +126,29 @@ def create_app() -> FastAPI:
                             x1 = int(g.box.r * pix.width)
                             y1 = int(g.box.b * pix.height)
 
-                            label = str(c.chunk_type)
+                            label = str(c.chunk_type).upper()
                             text_bbox = draw.textbbox((0, 0), label, font=font)
                             text_w = text_bbox[2] - text_bbox[0]
                             text_h = text_bbox[3] - text_bbox[1]
-                            label_x = x0
-                            label_y = max(0, y0 - text_h - 6)
+                            label_x = x0 + 4
+                            label_y = max(0, y0 - text_h - 8)
 
-                            # label background
+                            bg_rect = [
+                                (label_x - 6, label_y - 4),
+                                (label_x + text_w + 6, label_y + text_h + 4),
+                            ]
                             draw.rectangle(
-                                [
-                                    (label_x - 4, label_y - 2),
-                                    (label_x + text_w + 4, label_y + text_h + 2),
-                                ],
+                                bg_rect,
                                 fill=(*color, int(viz_config.text_bg_opacity * 255)),
+                                outline=(0, 0, 0, 180),
+                                width=1,
                             )
-                            # text
-                            draw.text((label_x, label_y), label, fill=(255, 255, 255), font=font)
+                            draw.text(
+                                (label_x, label_y),
+                                label,
+                                fill=(255, 255, 255),
+                                font=font,
+                            )
                             # box
                             for offset in range(viz_config.thickness):
                                 draw.rectangle(

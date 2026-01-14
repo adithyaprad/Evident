@@ -279,7 +279,7 @@ function App() {
           />
 
           <section
-            className="panel column split-panel"
+            className="panel column split-panel parser-panel"
             style={{ flexBasis: `${100 - splitPercent}%` }}
           >
             <div className="panel-header">

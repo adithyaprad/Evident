@@ -18,6 +18,7 @@
   align-items: start;
   flex: 1;
   min-width: 0;
+  align-items: stretch;
 }
 
 .hero h1 {
@@ -121,8 +122,12 @@
 }
 
 .split-panel {
-  flex: 0 0 auto;
-  min-width: 280px;
+  flex: 1 1 0;
+  min-width: 320px;
+}
+
+.parser-panel {
+  margin-right: 12px;
 }
 
 .dropzone {
@@ -295,7 +300,7 @@
   border-radius: 10px;
   padding: 12px;
   min-height: 360px;
-  height: calc(100vh - 320px);
+  height: calc(100vh - 260px);
   overflow: auto;
   border: 1px solid #1f2937;
 }
@@ -383,7 +388,7 @@
   border-radius: 10px;
   padding: 10px;
   background: #f8fafc;
-  height: calc(100vh - 320px);
+  height: calc(100vh - 260px);
   overflow: auto;
 }
 
