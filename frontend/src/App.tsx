@@ -15,6 +15,7 @@ const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 function App() {
   const [file, setFile] = useState<File | null>(null)
   const [isDragging, setDragging] = useState(false)
+  const [isUploaderOpen, setUploaderOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [parsedData, setParsedData] = useState<unknown | null>(null)
@@ -57,37 +58,53 @@ function App() {
   }, [parsedData])
 
   const handleFileSelect = (selected: File | null) => {
-    if (!selected) return
-    if (selected.type !== 'application/pdf') {
+    if (!selected) return null
+    const isPdf =
+      selected.type === 'application/pdf' ||
+      selected.name.toLowerCase().endsWith('.pdf')
+    if (!isPdf) {
       setError('Only PDF files are supported.')
       setFile(null)
-      return
+      return null
     }
     setError(null)
     setFile(selected)
+    return selected
   }
 
   const onFileInputChange = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = event.target.files?.[0] ?? null
-    handleFileSelect(selected)
+    const valid = handleFileSelect(selected)
+    if (valid) {
+      setUploaderOpen(false)
+      submit(valid)
+    }
+    event.target.value = ''
   }
 
   const onDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault()
+    event.stopPropagation()
     setDragging(false)
     const dropped = event.dataTransfer.files?.[0]
-    handleFileSelect(dropped ?? null)
+    const valid = handleFileSelect(dropped ?? null)
+    if (valid) {
+      setUploaderOpen(false)
+      submit(valid)
+    }
   }
 
   const onDragOver = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault()
+    event.stopPropagation()
     setDragging(true)
   }
 
   const onDragLeave = () => setDragging(false)
 
-  const submit = async () => {
-    if (!file) {
+  const submit = async (targetFile: File | null = file) => {
+    const fileToUpload = targetFile ?? file
+    if (!fileToUpload) {
       setError('Choose a PDF to parse.')
       return
     }
@@ -95,9 +112,10 @@ function App() {
     setError(null)
     setParsedData(null)
     setVisualizations([])
+    setFile(fileToUpload)
 
     const form = new FormData()
-    form.append('file', file)
+    form.append('file', fileToUpload)
 
     try {
       const res = await fetch(`${API_BASE}/api/parse`, {
@@ -162,8 +180,10 @@ function App() {
     window.addEventListener('mouseup', onUp)
   }
 
+  const pageClassName = `page ${isUploaderOpen ? 'modal-open' : ''}`
+
   return (
-    <div className="page">
+    <div className={pageClassName}>
       <header className="hero">
         <div>
           <p className="eyebrow">Grounded QA — raw ingest</p>
@@ -183,18 +203,19 @@ function App() {
         </div>
       )}
 
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/pdf"
+        onChange={onFileInputChange}
+        hidden
+      />
+
       <div className="app-shell">
         <aside className="sidebar">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="application/pdf"
-            onChange={onFileInputChange}
-            hidden
-          />
           <button
             className="icon-button"
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => setUploaderOpen(true)}
             title="Upload PDF"
           >
             <svg viewBox="0 0 24 24" aria-hidden>
@@ -208,39 +229,7 @@ function App() {
               />
             </svg>
           </button>
-          <button
-            className="icon-button"
-            onClick={submit}
-            disabled={loading}
-            title="Parse"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden>
-              <path
-                d="M5 12h14M12 5v14"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.7"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
-          <button
-            className="icon-button"
-            onClick={() => setFile(null)}
-            title="Clear"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden>
-              <path
-                d="M6 6l12 12M18 6l-12 12"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.7"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
         </aside>
-
         <div className="layout split" ref={layoutRef}>
           <section
             className="panel column split-panel"
@@ -344,6 +333,58 @@ function App() {
           </section>
         </div>
       </div>
+
+      {isUploaderOpen && (
+        <div
+          className="upload-modal"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => {
+            setDragging(false)
+            setUploaderOpen(false)
+          }}
+        >
+          <div
+            className="upload-card"
+            onClick={(event) => {
+              event.stopPropagation()
+            }}
+          >
+            <p className="modal-title">Upload a PDF</p>
+            <p className="modal-sub">
+              Drag and drop a PDF to start parsing automatically, or click to browse.
+            </p>
+            <div
+              className={`dropzone ${isDragging ? 'dragging' : ''}`}
+              onDragOver={onDragOver}
+              onDragLeave={onDragLeave}
+              onDrop={onDrop}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <p className="drop-title">Drop your PDF here</p>
+              <p className="drop-sub">
+                We will blur the background and start parsing right away.
+              </p>
+              {file ? (
+                <p className="file-name">Selected: {file.name}</p>
+              ) : (
+                <p className="file-name muted">No file selected yet</p>
+              )}
+            </div>
+            <div className="modal-actions">
+              <button
+                className="secondary"
+                onClick={() => {
+                  setDragging(false)
+                  setUploaderOpen(false)
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
