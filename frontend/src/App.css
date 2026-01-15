@@ -455,6 +455,15 @@
   gap: 10px;
 }
 
+.viz-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #0f172a;
+  white-space: nowrap;
+}
+
 .viz-board {
   border: 1px solid #e5e7eb;
   border-radius: 10px;

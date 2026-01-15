@@ -24,6 +24,8 @@ function App() {
   const [panelMode, setPanelMode] = useState<'parse' | 'chat'>('parse')
   const [activeTab, setActiveTab] = useState<'json' | 'markdown'>('json')
   const [visualizations, setVisualizations] = useState<string[]>([])
+  const [filteredVisualizations, setFilteredVisualizations] = useState<string[]>([])
+  const [showAllViz, setShowAllViz] = useState(true)
   const [splitPercent, setSplitPercent] = useState(50)
   const [chatQuestion, setChatQuestion] = useState('')
   const [chatMessages, setChatMessages] = useState<
@@ -179,10 +181,18 @@ function App() {
       const body = (await res.json()) as {
         message: string
         sources?: unknown[]
+        filtered_visualizations?: string[]
       }
+      // Display-only: try to extract answer field from JSON, else show raw
+      const displayAnswer = extractAnswerFromMessage(body.message)
       setChatMessages([
-        { question: chatQuestion, answer: body.message, sources: body.sources },
+        { question: chatQuestion, answer: displayAnswer, sources: body.sources },
       ])
+      const filtered = body.filtered_visualizations ?? []
+      setFilteredVisualizations(filtered)
+      if (filtered.length > 0) {
+        setShowAllViz(false)
+      }
       setChatQuestion('')
     } catch (err) {
       const message =
@@ -232,6 +242,34 @@ function App() {
   }
 
   const pageClassName = `page ${isUploaderOpen ? 'modal-open' : ''}`
+
+  const extractAnswerFromMessage = (msg: string) => {
+    if (!msg) return ''
+    // try fenced JSON first
+    const fenceSplit = msg.split('```json')
+    const tryParse = (text: string) => {
+      try {
+        const parsed = JSON.parse(text)
+        if (parsed && typeof parsed === 'object' && 'answer' in parsed) {
+          const ans = (parsed as Record<string, unknown>).answer
+          if (typeof ans === 'string') return ans
+        }
+      } catch {
+        /* ignore */
+      }
+      return ''
+    }
+    if (fenceSplit.length > 1) {
+      const after = fenceSplit[1]
+      const endIdx = after.indexOf('```')
+      const candidate = endIdx >= 0 ? after.slice(0, endIdx).trim() : after.trim()
+      const parsed = tryParse(candidate)
+      if (parsed) return parsed
+    }
+    const parsedRaw = tryParse(msg.trim())
+    if (parsedRaw) return parsedRaw
+    return msg
+  }
 
   return (
     <div className={pageClassName}>
@@ -292,21 +330,35 @@ function App() {
                 <h3>Page overlays</h3>
                 {file && <p className="file-chip">{file.name}</p>}
               </div>
+              {filteredVisualizations.length > 0 && (
+                <label className="viz-toggle">
+                  <input
+                    type="checkbox"
+                    checked={showAllViz}
+                    onChange={(e) => setShowAllViz(e.target.checked)}
+                  />
+                  Show all chunk visualizations
+                </label>
+              )}
               <p className="viz-count">
                 {visualizations.length > 0 ? `${visualizations.length} page(s)` : '—'}
               </p>
             </div>
             <div className="viz-board">
-              {visualizations.length > 0 ? (
+              {(showAllViz ? visualizations : filteredVisualizations).length > 0 ? (
                 <div className="viz-grid">
-                  {visualizations.map((src) => (
+                  {(showAllViz ? visualizations : filteredVisualizations).map((src) => (
                     <div className="viz-card" key={src}>
                       <img src={getImageUrl(src)} alt="Visualization" />
                     </div>
                   ))}
                 </div>
               ) : (
-                <p className="placeholder">Upload to view page visualizations.</p>
+                <p className="placeholder">
+                  {showAllViz
+                    ? 'Upload to view page visualizations.'
+                    : 'Ask a question to view referenced chunk visualizations.'}
+                </p>
               )}
             </div>
           </section>

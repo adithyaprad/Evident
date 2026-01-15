@@ -2,7 +2,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, List
+from typing import Any, List, Set
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -98,8 +98,8 @@ def create_app() -> FastAPI:
         name="static",
     )
 
-    def build_visualizations(pdf_path: Path, parsed_docs: Any) -> List[str]:
-        """Generate visualization images (boxed/labelled) and return URLs."""
+    def build_visualizations(pdf_path: Path, parsed_docs: Any, allowed_chunk_ids: Set[str] | None = None) -> List[str]:
+        """Generate visualization images (boxed/labelled) and return URLs. Optionally filter by chunk ids."""
         if not parsed_docs or len(parsed_docs) == 0:
             return []
 
@@ -127,9 +127,13 @@ def create_app() -> FastAPI:
                     draw = ImageDraw.Draw(img, "RGBA")
 
                     page_chunks = [
-                        c for c in parsed_doc.chunks if c.grounding and c.grounding[0].page == page_idx
+                        c
+                        for c in parsed_doc.chunks
+                        if c.grounding and c.grounding[0].page == page_idx
                     ]
                     for c in page_chunks:
+                        if allowed_chunk_ids is not None and str(c.chunk_id) not in allowed_chunk_ids:
+                            continue
                         color = color_map.get(c.chunk_type, (0, 122, 255))
                         for g in c.grounding:
                             if not g.box:
@@ -232,13 +236,133 @@ def create_app() -> FastAPI:
             parts.append("\n" + "=" * 50 + "\n")
         return "\n".join(parts)
 
+    def extract_chunk_ids_from_llm_response(content: str) -> Set[str]:
+        """Best-effort extraction of chunk_ids from LLM response content."""
+        ids: Set[str] = set()
+        if not content:
+            return ids
+        try:
+            # try fenced json
+            if "```json" in content:
+                json_part = content.split("```json")[1].split("```")[0].strip()
+                data = json.loads(json_part)
+            else:
+                data = json.loads(content)
+            if isinstance(data, dict):
+                chunks = data.get("chunks_used") or []
+                for item in chunks:
+                    if isinstance(item, dict):
+                        cid = item.get("chunk_id")
+                        if cid:
+                            ids.add(str(cid))
+                    elif isinstance(item, str):
+                        # look for chunk_id in string
+                        import re
+
+                        match = re.search(r"chunk_id['\"]?:\s*'([^']+)'", item)
+                        if match:
+                            ids.add(match.group(1))
+            return ids
+        except Exception:
+            return ids
+
+    def build_visualizations_for_chunk_ids(
+        pdf_path: Path, parsed_docs: Any, allowed_chunk_ids: Set[str]
+    ) -> List[str]:
+        """Generate visualizations only for the allowed chunk ids from parsed docs."""
+        if not parsed_docs or len(parsed_docs) == 0 or not allowed_chunk_ids:
+            return []
+
+        viz_subdir = VIZ_DIR / f"{pdf_path.stem}_{uuid4().hex}_filtered"
+        viz_subdir.mkdir(parents=True, exist_ok=True)
+
+        viz_config = VisualizationConfig(
+            thickness=3,
+            text_bg_opacity=0.85,
+            padding=4,
+            font_scale=0.5,
+        )
+        color_map = {k: (v[2], v[1], v[0]) for k, v in viz_config.color_map.items()}  # BGR->RGB
+        try:
+            font = ImageFont.truetype("DejaVuSans-Bold.ttf", 14)
+        except Exception:
+            font = ImageFont.load_default()
+
+        try:
+            with fitz.open(pdf_path) as doc:
+                for page_idx, page in enumerate(doc):
+                    pix = page.get_pixmap(dpi=144, colorspace=fitz.csRGB)
+                    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                    draw = ImageDraw.Draw(img, "RGBA")
+
+                    parsed_doc = parsed_docs[0]
+                    page_chunks = [
+                        c
+                        for c in parsed_doc.chunks
+                        if c.grounding and c.grounding[0].page == page_idx and str(c.chunk_id) in allowed_chunk_ids
+                    ]
+                    for c in page_chunks:
+                        color = color_map.get(c.chunk_type, (0, 122, 255))
+                        for g in c.grounding:
+                            if not g.box:
+                                continue
+                            x0 = int(g.box.l * pix.width)
+                            y0 = int(g.box.t * pix.height)
+                            x1 = int(g.box.r * pix.width)
+                            y1 = int(g.box.b * pix.height)
+
+                            label = str(c.chunk_type).upper()
+                            text_bbox = draw.textbbox((0, 0), label, font=font)
+                            text_w = text_bbox[2] - text_bbox[0]
+                            text_h = text_bbox[3] - text_bbox[1]
+                            label_x = x0 + 4
+                            label_y = max(0, y0 - text_h - 8)
+                            bg_rect = [
+                                (label_x - 6, label_y - 4),
+                                (label_x + text_w + 6, label_y + text_h + 4),
+                            ]
+                            draw.rectangle(
+                                bg_rect,
+                                fill=(*color, int(viz_config.text_bg_opacity * 255)),
+                                outline=(0, 0, 0, 180),
+                                width=1,
+                            )
+                            draw.text(
+                                (label_x, label_y),
+                                label,
+                                fill=(255, 255, 255),
+                                font=font,
+                            )
+                            for offset in range(viz_config.thickness):
+                                draw.rectangle(
+                                    [(x0 - offset, y0 - offset), (x1 + offset, y1 + offset)],
+                                    outline=color,
+                                    width=1,
+                                )
+
+                    out_path = viz_subdir / f"{pdf_path.stem}_viz_page_{page_idx}.png"
+                    img.save(out_path)
+        except Exception as exc:
+            print(f"Filtered visualization failed: {exc}")
+            return []
+
+        urls: List[str] = []
+        for img_path in sorted(viz_subdir.glob("*.png")):
+            relative = img_path.relative_to(STATIC_DIR)
+            urls.append(f"/static/{relative.as_posix()}")
+        return urls
+
     @app.post("/api/chat")
     async def chat(payload: ChatRequest) -> JSONResponse:
         api_key = require_openai_api_key()
         # Use prebuilt vector store from the last parse
         vector_store: Chroma | None = getattr(app.state, "vector_store", None)
+        parsed_docs = getattr(app.state, "parsed_docs", None)
+        pdf_path: Path | None = getattr(app.state, "last_pdf_path", None)
         if vector_store is None:
             raise HTTPException(status_code=400, detail="No vector store available. Parse a PDF first.")
+        if parsed_docs is None or pdf_path is None:
+            raise HTTPException(status_code=400, detail="Parsed document cache missing. Parse again.")
 
         retriever = vector_store.as_retriever(search_kwargs={"k": 5})
         retrieved_docs = retriever.invoke(payload.question)
@@ -271,7 +395,26 @@ Answer:"""
         response = llm.invoke(prompt_text)
 
         sources = [doc.metadata for doc in retrieved_docs]
-        return JSONResponse(content={"message": response.content, "sources": sources})
+
+        # Build filtered visualizations based on retrieved chunk ids
+        # Derive chunk ids: prefer llm response, fallback to retrieved docs
+        chunk_ids_from_llm = extract_chunk_ids_from_llm_response(response.content)
+        allowed_chunk_ids: Set[str] = set(chunk_ids_from_llm)
+        if not allowed_chunk_ids:
+            for doc in retrieved_docs:
+                cid = doc.metadata.get("chunk_id")
+                if cid:
+                    allowed_chunk_ids.add(str(cid))
+
+        filtered_viz = build_visualizations_for_chunk_ids(pdf_path, parsed_docs, allowed_chunk_ids)
+
+        return JSONResponse(
+            content={
+                "message": response.content,
+                "sources": sources,
+                "filtered_visualizations": filtered_viz,
+            }
+        )
 
     @app.post("/api/parse", response_model=ParseResponse)
     async def parse_pdf(file: UploadFile = File(...)) -> JSONResponse:
@@ -302,15 +445,12 @@ Answer:"""
                 )
             else:
                 app.state.vector_store = None
+            # cache parsed docs and pdf path for chat visualizations
+            app.state.parsed_docs = parsed
+            app.state.last_pdf_path = temp_path
             return JSONResponse(content={"data": payload, "visualizations": viz_urls})
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Failed to parse PDF: {exc}")
-        finally:
-            # best-effort cleanup; ok to leave temp on failure
-            try:
-                temp_path.unlink(missing_ok=True)
-            except Exception:
-                pass
 
     return app
 
