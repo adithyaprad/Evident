@@ -17,11 +17,18 @@ function App() {
   const [isDragging, setDragging] = useState(false)
   const [isUploaderOpen, setUploaderOpen] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [chatLoading, setChatLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [chatError, setChatError] = useState<string | null>(null)
   const [parsedData, setParsedData] = useState<unknown | null>(null)
+  const [panelMode, setPanelMode] = useState<'parse' | 'chat'>('parse')
   const [activeTab, setActiveTab] = useState<'json' | 'markdown'>('json')
   const [visualizations, setVisualizations] = useState<string[]>([])
   const [splitPercent, setSplitPercent] = useState(50)
+  const [chatQuestion, setChatQuestion] = useState('')
+  const [chatMessages, setChatMessages] = useState<
+    { question: string; answer: string; sources?: unknown[] }[]
+  >([])
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const layoutRef = useRef<HTMLDivElement | null>(null)
 
@@ -139,6 +146,50 @@ function App() {
       setError(message)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const submitChat = async () => {
+    if (!parsedData) {
+      setChatError('Parse a PDF first.')
+      return
+    }
+    if (!chatQuestion.trim()) {
+      setChatError('Enter a question.')
+      return
+    }
+
+    setChatError(null)
+    setChatLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: chatQuestion,
+          parsed: parsedData,
+        }),
+      })
+      if (!res.ok) {
+        const detail = await res.json().catch(() => null)
+        const message =
+          detail?.detail || `Chat failed with status ${res.status}`
+        throw new Error(message)
+      }
+      const body = (await res.json()) as {
+        message: string
+        sources?: unknown[]
+      }
+      setChatMessages([
+        { question: chatQuestion, answer: body.message, sources: body.sources },
+      ])
+      setChatQuestion('')
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Unexpected chat error.'
+      setChatError(message)
+    } finally {
+      setChatLoading(false)
     }
   }
 
@@ -271,65 +322,127 @@ function App() {
             className="panel column split-panel parser-panel"
             style={{ flexBasis: `${100 - splitPercent}%` }}
           >
-            <div className="panel-header">
-              <div>
-                <p className="eyebrow">Parser output</p>
-                <h3>Pretty-printed response</h3>
-              </div>
-              <div className="viewer-actions">
-                <div className="tabs">
-                  <button
-                    className={`tab ${activeTab === 'json' ? 'active' : ''}`}
-                    onClick={() => setActiveTab('json')}
-                    disabled={!parsedData}
-                  >
-                    JSON
-                  </button>
-                  <button
-                    className={`tab ${activeTab === 'markdown' ? 'active' : ''}`}
-                    onClick={() => setActiveTab('markdown')}
-                    disabled={!parsedData}
-                  >
-                    Markdown
-                  </button>
+            <div className="mode-tabs">
+              <button
+                className={`tab ${panelMode === 'parse' ? 'active' : ''}`}
+                onClick={() => setPanelMode('parse')}
+              >
+                Parse
+              </button>
+              <button
+                className={`tab ${panelMode === 'chat' ? 'active' : ''}`}
+                onClick={() => setPanelMode('chat')}
+                disabled={!parsedData}
+              >
+                Chat
+              </button>
+            </div>
+
+            {panelMode === 'parse' ? (
+              <>
+                <div className="panel-header">
+                  <div>
+                    <p className="eyebrow">Parser output</p>
+                    <h3>Pretty-printed response</h3>
+                  </div>
+                  <div className="viewer-actions">
+                    <div className="tabs">
+                      <button
+                        className={`tab ${activeTab === 'json' ? 'active' : ''}`}
+                        onClick={() => setActiveTab('json')}
+                        disabled={!parsedData}
+                      >
+                        JSON
+                      </button>
+                      <button
+                        className={`tab ${
+                          activeTab === 'markdown' ? 'active' : ''
+                        }`}
+                        onClick={() => setActiveTab('markdown')}
+                        disabled={!parsedData}
+                      >
+                        Markdown
+                      </button>
+                    </div>
+                    <button
+                      className="secondary"
+                      onClick={copyCurrent}
+                      disabled={!parsedData}
+                    >
+                      {activeTab === 'json' ? 'Copy JSON' : 'Copy Markdown'}
+                    </button>
+                  </div>
                 </div>
-                <button
-                  className="secondary"
-                  onClick={copyCurrent}
-                  disabled={!parsedData}
+                <div
+                  className={`json-viewer ${
+                    activeTab === 'markdown' ? 'markdown-mode' : ''
+                  }`}
                 >
-                  {activeTab === 'json' ? 'Copy JSON' : 'Copy Markdown'}
-                </button>
-              </div>
-            </div>
-            <div
-              className={`json-viewer ${
-                activeTab === 'markdown' ? 'markdown-mode' : ''
-              }`}
-            >
-              {activeTab === 'json' ? (
-                prettyJson ? (
-                  <pre>{prettyJson}</pre>
-                ) : (
-                  <p className="placeholder">
-                    Upload a PDF to view the raw parse output.
-                  </p>
-                )
-              ) : markdownText ? (
-                <div className="markdown-body">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    rehypePlugins={[rehypeRaw]}
-                  >
-                    {markdownText}
-                  </ReactMarkdown>
+                  {activeTab === 'json' ? (
+                    prettyJson ? (
+                      <pre>{prettyJson}</pre>
+                    ) : (
+                      <p className="placeholder">
+                        Upload a PDF to view the raw parse output.
+                      </p>
+                    )
+                  ) : markdownText ? (
+                    <div className="markdown-body">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        rehypePlugins={[rehypeRaw]}
+                      >
+                        {markdownText}
+                      </ReactMarkdown>
+                    </div>
+                  ) : (
+                    <p className="placeholder">
+                      No markdown found in the parser response.
+                    </p>
+                  )}
                 </div>
-              ) : (
-                <p className="placeholder">
-                  No markdown found in the parser response.
-                </p>
-              )}
-            </div>
+              </>
+            ) : (
+              <div className="chat-panel">
+                <div className="panel-header">
+                  <div>
+                    <p className="eyebrow">RAG chat</p>
+                    <h3>Ask questions about this PDF</h3>
+                  </div>
+                </div>
+                {chatError && <div className="alert error">{chatError}</div>}
+                <div className="chat-box">
+                  <textarea
+                    className="chat-input"
+                    placeholder="Ask a question about the parsed document..."
+                    value={chatQuestion}
+                    onChange={(e) => setChatQuestion(e.target.value)}
+                    disabled={chatLoading}
+                  />
+                  <button
+                    className="primary"
+                    onClick={submitChat}
+                    disabled={chatLoading}
+                  >
+                    {chatLoading ? 'Asking…' : 'Send'}
+                  </button>
+                </div>
+                <div className="chat-messages">
+                  {chatMessages.length === 0 ? (
+                    <p className="placeholder">
+                      Ask a question to see the model response.
+                    </p>
+                  ) : (
+                    chatMessages.map((msg, idx) => (
+                      <div className="chat-message" key={idx}>
+                        <p className="chat-question">Q: {msg.question}</p>
+                        <pre className="chat-answer">{msg.answer}</pre>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
           </section>
         </div>
       </div>

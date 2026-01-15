@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -13,6 +14,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from PIL import Image, ImageDraw, ImageFont
 import fitz  # PyMuPDF
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_community.vectorstores import Chroma
+from langchain_core.documents import Document
 
 # Third-party parser used elsewhere in the repo
 from agentic_doc.parse import parse
@@ -24,6 +28,8 @@ DEFAULT_UPLOAD_DIR = BASE_DIR / "uploads"
 STATIC_DIR = BASE_DIR / "static"
 VIZ_DIR = STATIC_DIR / "visualizations"
 MAX_FILE_BYTES = 25 * 1024 * 1024  # 25 MB safeguard
+EMBEDDING_MODEL = "text-embedding-3-small"
+CHAT_MODEL = "gpt-5-mini"
 
 
 class ParseResponse(BaseModel):
@@ -31,6 +37,13 @@ class ParseResponse(BaseModel):
 
     data: Any
     visualizations: List[str] | None = None
+
+
+class ChatRequest(BaseModel):
+    """Payload for chat RAG requests."""
+
+    question: str
+    parsed: Any
 
 
 def ensure_upload_dir() -> Path:
@@ -173,6 +186,93 @@ def create_app() -> FastAPI:
     def healthcheck() -> dict[str, str]:
         return {"status": "ok"}
 
+    def require_openai_api_key() -> str:
+        key = os.getenv("OPENAI_API_KEY")
+        if not key:
+            raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not configured.")
+        return key
+
+    def build_documents_from_parsed(parsed: Any) -> List[Document]:
+        """Convert parser output into LangChain Documents."""
+        documents: List[Document] = []
+        docs = parsed
+        if isinstance(parsed, dict) and "data" in parsed:
+            docs = parsed["data"]
+
+        if not isinstance(docs, list):
+            return documents
+
+        for doc_idx, doc in enumerate(docs):
+            chunks = doc.get("chunks") if isinstance(doc, dict) else None
+            if not chunks:
+                continue
+            for chunk in chunks:
+                if not isinstance(chunk, dict):
+                    continue
+                text = chunk.get("text") or ""
+                if not text:
+                    continue
+                grounding = chunk.get("grounding") or []
+                metadata = {
+                    "source_filename": chunk.get("source_filename", f"document_{doc_idx}.pdf"),
+                    "chunk_type": chunk.get("chunk_type"),
+                    "chunk_id": chunk.get("chunk_id"),
+                    "grounding_info": json.dumps(grounding),
+                    "page_number": grounding[0].get("page") if grounding else None,
+                }
+                documents.append(Document(page_content=text, metadata=metadata))
+        return documents
+
+    def build_context_blob(retrieved: List[Document]) -> str:
+        parts: List[str] = []
+        for idx, doc in enumerate(retrieved, 1):
+            parts.append(f"CHUNK {idx}:")
+            parts.append(f"Text: {doc.page_content}")
+            parts.append(f"Metadata: {doc.metadata}")
+            parts.append("\n" + "=" * 50 + "\n")
+        return "\n".join(parts)
+
+    @app.post("/api/chat")
+    async def chat(payload: ChatRequest) -> JSONResponse:
+        api_key = require_openai_api_key()
+        # Use prebuilt vector store from the last parse
+        vector_store: Chroma | None = getattr(app.state, "vector_store", None)
+        if vector_store is None:
+            raise HTTPException(status_code=400, detail="No vector store available. Parse a PDF first.")
+
+        retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+        retrieved_docs = retriever.invoke(payload.question)
+
+        context_blob = build_context_blob(retrieved_docs)
+        prompt_text = f"""You are a helpful AI assistant that answers questions based on the provided context.
+Use only the information from the context to answer questions.
+If the answer cannot be found in the context, say "I cannot find that information in the provided context."
+Provide detailed and accurate answers when possible.
+
+Based on the chunks provided to you, answer the question.
+
+Return the answer in a JSON format:
+
+{{
+\"answer\": \"[insert answer here]\",
+\"chunks_used\": [
+\"[insert exact json of the chunk details you used to answer the question - simply copy paste]\"
+]
+}}
+
+Context:
+{context_blob}
+
+Question: {payload.question}
+
+Answer:"""
+
+        llm = ChatOpenAI(model=CHAT_MODEL, temperature=0, openai_api_key=api_key)
+        response = llm.invoke(prompt_text)
+
+        sources = [doc.metadata for doc in retrieved_docs]
+        return JSONResponse(content={"message": response.content, "sources": sources})
+
     @app.post("/api/parse", response_model=ParseResponse)
     async def parse_pdf(file: UploadFile = File(...)) -> JSONResponse:
         if not file.filename or not file.filename.lower().endswith(".pdf"):
@@ -190,6 +290,18 @@ def create_app() -> FastAPI:
             parsed = parse(str(temp_path))
             payload = jsonable_encoder(parsed)
             viz_urls = build_visualizations(temp_path, parsed)
+            # Build embeddings once at parse-time for chat reuse
+            documents = build_documents_from_parsed(payload)
+            if documents:
+                api_key = require_openai_api_key()
+                embeddings = OpenAIEmbeddings(
+                    model=EMBEDDING_MODEL, openai_api_key=api_key
+                )
+                app.state.vector_store = Chroma.from_documents(
+                    documents=documents, embedding=embeddings
+                )
+            else:
+                app.state.vector_store = None
             return JSONResponse(content={"data": payload, "visualizations": viz_urls})
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Failed to parse PDF: {exc}")

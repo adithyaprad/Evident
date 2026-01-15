@@ -303,6 +303,65 @@
   cursor: not-allowed;
 }
 
+.mode-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.chat-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chat-box {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.chat-input {
+  flex: 1;
+  min-height: 120px;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  padding: 10px;
+  font-size: 14px;
+  resize: vertical;
+}
+
+.chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: calc(100vh - 320px);
+  overflow: auto;
+}
+
+.chat-message {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.chat-question {
+  margin: 0 0 6px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.chat-answer {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, SFMono-Regular, Menlo, Monaco, Consolas,
+    'Liberation Mono', 'Courier New', monospace;
+  font-size: 13px;
+  color: #0f172a;
+}
+
 .viewer h3 {
   margin: 4px 0 0;
 }
