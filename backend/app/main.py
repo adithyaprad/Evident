@@ -6,7 +6,7 @@ from typing import Any, List, Set
 from uuid import uuid4
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -19,8 +19,8 @@ from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 
 # Third-party parser used elsewhere in the repo
-from agentic_doc.parse import parse
 from agentic_doc.config import VisualizationConfig
+from .chunkers import ChunkingError, ChunkingStrategy, run_chunking_strategy
 
 # Constants
 BASE_DIR = Path(__file__).parent.parent
@@ -29,7 +29,7 @@ STATIC_DIR = BASE_DIR / "static"
 VIZ_DIR = STATIC_DIR / "visualizations"
 MAX_FILE_BYTES = 25 * 1024 * 1024  # 25 MB safeguard
 EMBEDDING_MODEL = "text-embedding-3-small"
-CHAT_MODEL = "gpt-5-mini"
+CHAT_MODEL = "gpt-5-nano"
 
 
 class ParseResponse(BaseModel):
@@ -71,8 +71,10 @@ def save_temp_file(upload: UploadFile, upload_dir: Path) -> Path:
 
 
 def create_app() -> FastAPI:
-    # Load env if present
-    load_dotenv()
+    # Load env if present (project root and backend/app/.env), overriding blanks from shell
+    load_dotenv(override=True)
+    load_dotenv(BASE_DIR / ".env", override=True)
+    load_dotenv(BASE_DIR / "app" / ".env", override=True)
 
     app = FastAPI(title="PDF Parser API", version="0.1.0")
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
@@ -270,7 +272,15 @@ def create_app() -> FastAPI:
         pdf_path: Path, parsed_docs: Any, allowed_chunk_ids: Set[str]
     ) -> List[str]:
         """Generate visualizations only for the allowed chunk ids from parsed docs."""
-        if not parsed_docs or len(parsed_docs) == 0 or not allowed_chunk_ids:
+        def normalize_parsed_docs(val: Any) -> List[Any]:
+            if isinstance(val, list):
+                return val
+            if isinstance(val, dict) and isinstance(val.get("data"), list):
+                return val["data"]
+            return []
+
+        parsed_list = normalize_parsed_docs(parsed_docs)
+        if not parsed_list or not allowed_chunk_ids:
             return []
 
         viz_subdir = VIZ_DIR / f"{pdf_path.stem}_{uuid4().hex}_filtered"
@@ -295,7 +305,7 @@ def create_app() -> FastAPI:
                     img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
                     draw = ImageDraw.Draw(img, "RGBA")
 
-                    parsed_doc = parsed_docs[0]
+                    parsed_doc = parsed_list[0]
                     page_chunks = [
                         c
                         for c in parsed_doc.chunks
@@ -417,7 +427,10 @@ Answer:"""
         )
 
     @app.post("/api/parse", response_model=ParseResponse)
-    async def parse_pdf(file: UploadFile = File(...)) -> JSONResponse:
+    async def parse_pdf(
+        file: UploadFile = File(...),
+        chunking_strategy: str = Form(ChunkingStrategy.SEMANTIC.value),
+    ) -> JSONResponse:
         if not file.filename or not file.filename.lower().endswith(".pdf"):
             raise HTTPException(status_code=400, detail="Only PDF files are supported.")
 
@@ -430,9 +443,11 @@ Answer:"""
             raise HTTPException(status_code=500, detail=f"Failed to save upload: {exc}")
 
         try:
-            parsed = parse(str(temp_path))
-            payload = jsonable_encoder(parsed)
-            viz_urls = build_visualizations(temp_path, parsed)
+            parsed_raw, viz_urls = run_chunking_strategy(temp_path, chunking_strategy)
+            payload = jsonable_encoder(parsed_raw)
+            chosen_strategy = ChunkingStrategy.normalize(chunking_strategy)
+            if chosen_strategy is ChunkingStrategy.SEMANTIC:
+                viz_urls = build_visualizations(temp_path, parsed_raw)
             # Build embeddings once at parse-time for chat reuse
             documents = build_documents_from_parsed(payload)
             if documents:
@@ -446,9 +461,17 @@ Answer:"""
             else:
                 app.state.vector_store = None
             # cache parsed docs and pdf path for chat visualizations
-            app.state.parsed_docs = parsed
+            app.state.parsed_docs = parsed_raw
             app.state.last_pdf_path = temp_path
-            return JSONResponse(content={"data": payload, "visualizations": viz_urls})
+            return JSONResponse(
+                content={
+                    "data": payload,
+                    "visualizations": viz_urls,
+                    "chunking_strategy": chosen_strategy.value,
+                }
+            )
+        except ChunkingError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Failed to parse PDF: {exc}")
 

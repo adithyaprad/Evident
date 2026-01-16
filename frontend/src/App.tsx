@@ -1,4 +1,8 @@
-import type { ChangeEvent, DragEvent, MouseEvent } from 'react'
+import type {
+  ChangeEvent,
+  DragEvent,
+  MouseEvent as ReactMouseEvent,
+} from 'react'
 import { useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -8,9 +12,19 @@ import './App.css'
 type ParseResponse = {
   data: unknown
   visualizations?: string[]
+  chunking_strategy?: string
 }
 
+type ChunkingStrategy = 'semantic' | 'late' | 'llm' | 'hierarchical' | 'agentic'
+
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+
+const CHUNKING_OPTIONS: { value: ChunkingStrategy; label: string }[] = [
+  { value: 'semantic', label: 'Semantic (default)' },
+  { value: 'late', label: 'Late chunking (Jina)' },
+  { value: 'llm', label: 'LLM chunking (LlamaParse)' },
+  { value: 'hierarchical', label: 'Hierarchical (LlamaParse)' },
+]
 
 function App() {
   const [file, setFile] = useState<File | null>(null)
@@ -19,6 +33,10 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [chatLoading, setChatLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [chunkingStrategy, setChunkingStrategy] =
+    useState<ChunkingStrategy>('semantic')
+  const [appliedChunkingStrategy, setAppliedChunkingStrategy] =
+    useState<ChunkingStrategy>('semantic')
   const [chatError, setChatError] = useState<string | null>(null)
   const [parsedData, setParsedData] = useState<unknown | null>(null)
   const [panelMode, setPanelMode] = useState<'parse' | 'chat'>('parse')
@@ -65,6 +83,17 @@ function App() {
     walk(parsedData)
     return collected.filter(Boolean).join('\n\n---\n\n')
   }, [parsedData])
+
+  const chunkingLabel = useMemo(() => {
+    const labelMap: Record<string, string> = {
+      semantic: 'Semantic (default)',
+      agentic: 'Semantic (default)',
+      late: 'Late chunking (Jina)',
+      llm: 'LLM chunking (LlamaParse)',
+      hierarchical: 'Hierarchical (LlamaParse)',
+    }
+    return labelMap[appliedChunkingStrategy] ?? appliedChunkingStrategy
+  }, [appliedChunkingStrategy])
 
   const handleFileSelect = (selected: File | null) => {
     if (!selected) return null
@@ -125,6 +154,7 @@ function App() {
 
     const form = new FormData()
     form.append('file', fileToUpload)
+    form.append('chunking_strategy', chunkingStrategy)
 
     try {
       const res = await fetch(`${API_BASE}/api/parse`, {
@@ -142,6 +172,8 @@ function App() {
       const body = (await res.json()) as ParseResponse
       setParsedData(body?.data ?? body)
       setVisualizations(body?.visualizations ?? [])
+      const returnedStrategy = body?.chunking_strategy ?? chunkingStrategy
+      setAppliedChunkingStrategy(returnedStrategy as ChunkingStrategy)
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Unexpected error occurred.'
@@ -217,7 +249,7 @@ function App() {
   const getImageUrl = (src: string) =>
     src.startsWith('http') ? src : `${API_BASE}${src}`
 
-  const onDividerMouseDown = (event: MouseEvent<HTMLDivElement>) => {
+  const onDividerMouseDown = (event: ReactMouseEvent<HTMLDivElement>) => {
     event.preventDefault()
     const startX = event.clientX
     const startPercent = splitPercent
@@ -225,7 +257,7 @@ function App() {
     if (!layout) return
     const rect = layout.getBoundingClientRect()
 
-    const onMove = (moveEvent: MouseEvent) => {
+    const onMove = (moveEvent: globalThis.MouseEvent) => {
       const delta = moveEvent.clientX - startX
       const deltaPercent = (delta / rect.width) * 100
       const next = Math.min(70, Math.max(30, startPercent + deltaPercent))
@@ -396,6 +428,9 @@ function App() {
                   <div>
                     <p className="eyebrow">Parser output</p>
                     <h3>Pretty-printed response</h3>
+                    <p className="eyebrow muted">
+                      Chunking: {chunkingLabel}
+                    </p>
                   </div>
                   <div className="viewer-actions">
                     <div className="tabs">
@@ -519,6 +554,30 @@ function App() {
             <p className="modal-sub">
               Drag and drop a PDF to start parsing automatically, or click to browse.
             </p>
+            <div className="option-row column">
+              <label className="option-label" htmlFor="chunking-select">
+                Chunking strategy
+              </label>
+              <select
+                id="chunking-select"
+                value={chunkingStrategy}
+                onChange={(e) =>
+                  setChunkingStrategy(e.target.value as ChunkingStrategy)
+                }
+                className="select-control"
+              >
+                {CHUNKING_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <p className="option-help">
+                Semantic keeps layout-aware chunks. Late embeds full doc first.
+                LLM uses LlamaParse + LLM-guided splits. Hierarchical keeps
+                parent/child nodes.
+              </p>
+            </div>
             <div
               className={`dropzone ${isDragging ? 'dragging' : ''}`}
               onDragOver={onDragOver}
