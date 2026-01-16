@@ -11,3 +11,7 @@ chromadb
 python-dotenv
 Pillow
 pymupdf
+requests
+llama-parse
+llama-index-core
+llama-index-embeddings-openai

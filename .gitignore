@@ -38,3 +38,7 @@ backend/static/
 
 # Project directories to ignore
 agentic_rag/
+
+#environment variables
+.env
+.env.local
