@@ -47,6 +47,7 @@ function App() {
   const [showAllViz, setShowAllViz] = useState(true)
   const [splitPercent, setSplitPercent] = useState(50)
   const [chatQuestion, setChatQuestion] = useState('')
+  const vizCardRefs = useRef<Record<number, HTMLDivElement | null>>({})
   type GroundingBox = { l: number; t: number; r: number; b: number }
   type GroundingRef = {
     page: number
@@ -171,6 +172,9 @@ function App() {
     setFilteredVisualizations([])
     setVizLoading(false)
     setShowAllViz(true)
+    setChatMessages([])
+    setChatQuestion('')
+    setActiveHighlights({})
     setFile(fileToUpload)
 
     const form = new FormData()
@@ -441,6 +445,10 @@ function App() {
 
   const triggerHighlight = (ref: GroundingRef) => {
     if (!ref.boxes.length || ref.page === undefined || ref.page === null) return
+    const card = vizCardRefs.current[ref.page]
+    if (card?.scrollIntoView) {
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
     setActiveHighlights((prev) => {
       const pulse = (prev[ref.page]?.pulse ?? 0) + 1
       const next = { ...prev, [ref.page]: { boxes: ref.boxes, pulse } }
@@ -596,6 +604,11 @@ function App() {
                       <div
                         className={`viz-card ${highlight ? 'has-highlight' : ''}`}
                         key={src}
+                        ref={(el) => {
+                          if (pageIdx !== null) {
+                            vizCardRefs.current[pageIdx] = el
+                          }
+                        }}
                       >
                         <img src={getImageUrl(src)} alt="Visualization" />
                         {highlight && (
