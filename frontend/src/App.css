@@ -484,12 +484,47 @@
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   padding: 6px;
+  position: relative;
+  overflow: hidden;
 }
 
 .viz-card img {
   width: 100%;
   display: block;
   border-radius: 4px;
+}
+
+.viz-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.viz-highlight {
+  position: absolute;
+  border: 2px solid #0ea5e9;
+  background: rgba(14, 165, 233, 0.18);
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.3);
+  animation: highlightFlash 0.9s ease;
+}
+
+.viz-card.has-highlight img {
+  filter: brightness(0.96);
+}
+
+@keyframes highlightFlash {
+  0% {
+    opacity: 0.2;
+    transform: scale(0.98);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0.2;
+  }
 }
 
 .file-chip {
@@ -580,6 +615,47 @@
   color: #64748b;
   font-size: 13px;
   line-height: 1.4;
+}
+
+.sources-list {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.source-pills {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.source-pill {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  background: #f8fafc;
+  cursor: pointer;
+  font-weight: 600;
+  color: #0f172a;
+  transition: all 0.15s ease;
+}
+
+.source-pill:hover {
+  border-color: #0ea5e9;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
+}
+
+.source-pill span:last-child {
+  color: #0ea5e9;
+}
+
+.eyebrow.muted {
+  color: #94a3b8;
 }
 
 @media (max-width: 960px) {
