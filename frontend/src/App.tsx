@@ -43,6 +43,7 @@ function App() {
   const [activeTab, setActiveTab] = useState<'json' | 'markdown'>('json')
   const [visualizations, setVisualizations] = useState<string[]>([])
   const [filteredVisualizations, setFilteredVisualizations] = useState<string[]>([])
+  const [vizLoading, setVizLoading] = useState(false)
   const [showAllViz, setShowAllViz] = useState(true)
   const [splitPercent, setSplitPercent] = useState(50)
   const [chatQuestion, setChatQuestion] = useState('')
@@ -167,6 +168,9 @@ function App() {
     setError(null)
     setParsedData(null)
     setVisualizations([])
+    setFilteredVisualizations([])
+    setVizLoading(false)
+    setShowAllViz(true)
     setFile(fileToUpload)
 
     const form = new FormData()
@@ -197,6 +201,39 @@ function App() {
       setError(message)
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function fetchFilteredVisualizations(chunkIds: (string | number)[]) {
+    if (!chunkIds || chunkIds.length === 0) {
+      setFilteredVisualizations([])
+      setShowAllViz(true)
+      return
+    }
+    setVizLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/chat/visualizations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chunk_ids: chunkIds.map((cid) => String(cid)) }),
+      })
+      if (!res.ok) {
+        const detail = await res.json().catch(() => null)
+        const message =
+          detail?.detail || `Visualization request failed with status ${res.status}`
+        throw new Error(message)
+      }
+      const body = (await res.json()) as { filtered_visualizations?: string[] }
+      const filtered = body.filtered_visualizations ?? []
+      setFilteredVisualizations(filtered)
+      if (filtered.length > 0) {
+        setShowAllViz(false)
+      }
+    } catch (err) {
+      console.error('Filtered visualization fetch failed', err)
+      setFilteredVisualizations([])
+    } finally {
+      setVizLoading(false)
     }
   }
 
@@ -231,16 +268,23 @@ function App() {
         message: string
         sources?: unknown[]
         filtered_visualizations?: string[]
+        chunk_ids?: (string | number)[]
       }
       // Display-only: try to extract answer field from JSON, else show raw
       const displayAnswer = extractAnswerFromMessage(body.message)
       const usedChunkIds = extractChunkIdsUsed(body.message)
+      const chunkIdsFromResponse = Array.isArray(body.chunk_ids)
+        ? body.chunk_ids.map((cid) => String(cid))
+        : []
+      const effectiveChunkIds = new Set<string>(chunkIdsFromResponse)
+      usedChunkIds.forEach((cid) => effectiveChunkIds.add(cid))
+
       const filteredSources =
-        usedChunkIds.size && body.sources
+        effectiveChunkIds.size > 0 && body.sources
           ? body.sources.filter((src) => {
               if (!src || typeof src !== 'object') return false
               const cid = (src as Record<string, unknown>).chunk_id
-              return cid !== undefined && cid !== null && usedChunkIds.has(String(cid))
+              return cid !== undefined && cid !== null && effectiveChunkIds.has(String(cid))
             })
           : body.sources ?? []
       const groundingRefs = filteredSources.length > 0 ? parseGroundingRefs(filteredSources) : []
@@ -252,10 +296,19 @@ function App() {
           groundingRefs,
         },
       ])
-      const filtered = body.filtered_visualizations ?? []
-      setFilteredVisualizations(filtered)
-      if (filtered.length > 0) {
+      const filteredFromBody = body.filtered_visualizations ?? []
+      if (filteredFromBody.length > 0) {
+        setFilteredVisualizations(filteredFromBody)
         setShowAllViz(false)
+      } else {
+        const chunkIdsArray = effectiveChunkIds.size > 0 ? Array.from(effectiveChunkIds) : []
+        setFilteredVisualizations([])
+        if (chunkIdsArray.length === 0) {
+          setShowAllViz(true)
+        } else {
+          setShowAllViz(false)
+          void fetchFilteredVisualizations(chunkIdsArray)
+        }
       }
       setChatQuestion('')
     } catch (err) {
@@ -532,7 +585,9 @@ function App() {
               </p>
             </div>
             <div className="viz-board">
-              {(showAllViz ? visualizations : filteredVisualizations).length > 0 ? (
+              {vizLoading ? (
+                <p className="placeholder">Loading filtered visualizations…</p>
+              ) : (showAllViz ? visualizations : filteredVisualizations).length > 0 ? (
                 <div className="viz-grid">
                   {(showAllViz ? visualizations : filteredVisualizations).map((src) => {
                     const pageIdx = getPageIndexFromSrc(src)

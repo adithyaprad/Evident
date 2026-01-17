@@ -52,6 +52,12 @@ class ChatRequest(BaseModel):
     parsed: Any
 
 
+class ChatVisualizationRequest(BaseModel):
+    """Request body for chat visualization generation."""
+
+    chunk_ids: List[str]
+
+
 def ensure_upload_dir() -> Path:
     DEFAULT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     return DEFAULT_UPLOAD_DIR
@@ -445,15 +451,29 @@ Answer:"""
                 if cid:
                     allowed_chunk_ids.add(str(cid))
 
-        filtered_viz = build_visualizations_for_chunk_ids(pdf_path, parsed_docs, allowed_chunk_ids)
-
         return JSONResponse(
             content={
                 "message": response.content,
                 "sources": sources,
-                "filtered_visualizations": filtered_viz,
+                "chunk_ids": sorted(allowed_chunk_ids),
             }
         )
+
+    @app.post("/api/chat/visualizations")
+    async def chat_visualizations(payload: ChatVisualizationRequest) -> JSONResponse:
+        parsed_docs = getattr(app.state, "parsed_docs", None)
+        pdf_path: Path | None = getattr(app.state, "last_pdf_path", None)
+        if parsed_docs is None or pdf_path is None:
+            raise HTTPException(status_code=400, detail="Parsed document cache missing. Parse again.")
+
+        allowed_chunk_ids: Set[str] = {str(cid) for cid in payload.chunk_ids if cid}
+        if not allowed_chunk_ids:
+            return JSONResponse(content={"filtered_visualizations": []})
+
+        filtered_viz = await asyncio.to_thread(
+            build_visualizations_for_chunk_ids, pdf_path, parsed_docs, allowed_chunk_ids
+        )
+        return JSONResponse(content={"filtered_visualizations": filtered_viz})
 
     @app.post("/api/parse", response_model=ParseResponse)
     async def parse_pdf(
