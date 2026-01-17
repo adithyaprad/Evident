@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, List, Set
@@ -112,6 +113,35 @@ def create_app() -> FastAPI:
         name="static",
     )
 
+    def format_chunk_label(chunk_type: Any) -> str:
+        """Return a human-friendly label (e.g., 'TEXT', 'TABLE', 'FIGURE')."""
+        if not chunk_type:
+            return "TEXT"
+        label_raw = str(chunk_type).lower().strip()
+
+        # Remove common prefixes/suffixes and separators
+        for prefix in ("chunktype_", "chunktype-", "chunk_type_", "chunk_type-", "chunktype", "chunk_type"):
+            if label_raw.startswith(prefix):
+                label_raw = label_raw[len(prefix) :]
+                break
+        label_raw = label_raw.replace("_", " ").replace("-", " ").strip()
+
+        # Collapse to alphanumerics for matching
+        condensed = re.sub(r"[^a-z0-9]", "", label_raw)
+        if not condensed:
+            return "TEXT"
+
+        # Map to a small, consistent vocabulary
+        if "table" in condensed:
+            return "TABLE"
+        if "figure" in condensed or "image" in condensed or "img" in condensed:
+            return "FIGURE"
+        if "text" in condensed or "paragraph" in condensed or "para" in condensed:
+            return "TEXT"
+
+        # Fallback: uppercase cleaned label
+        return label_raw.upper()
+
     def build_visualizations(pdf_path: Path, parsed_docs: Any, allowed_chunk_ids: Set[str] | None = None) -> List[str]:
         """Generate visualization images (boxed/labelled) and return URLs. Optionally filter by chunk ids."""
         if not parsed_docs or len(parsed_docs) == 0:
@@ -128,10 +158,14 @@ def create_app() -> FastAPI:
             font_scale=0.5,
         )
         color_map = {k: (v[2], v[1], v[0]) for k, v in viz_config.color_map.items()}  # BGR->RGB
+        font_path = STATIC_DIR / "fonts" / "DejaVuSans.ttf"
         try:
-            font = ImageFont.truetype("DejaVuSans-Bold.ttf", 14)
+            font = ImageFont.truetype(str(font_path), 15)
         except Exception:
-            font = ImageFont.load_default()
+            try:
+                font = ImageFont.truetype("DejaVuSans-Bold.ttf", 15)
+            except Exception:
+                font = ImageFont.load_default()
 
         try:
             with fitz.open(pdf_path) as doc:
@@ -157,7 +191,7 @@ def create_app() -> FastAPI:
                             x1 = int(g.box.r * pix.width)
                             y1 = int(g.box.b * pix.height)
 
-                            label = str(c.chunk_type).upper()
+                            label = format_chunk_label(c.chunk_type)
                             text_bbox = draw.textbbox((0, 0), label, font=font)
                             text_w = text_bbox[2] - text_bbox[0]
                             text_h = text_bbox[3] - text_bbox[1]
@@ -170,14 +204,14 @@ def create_app() -> FastAPI:
                             ]
                             draw.rectangle(
                                 bg_rect,
-                                fill=(*color, int(viz_config.text_bg_opacity * 255)),
-                                outline=(0, 0, 0, 180),
+                                fill=(255, 255, 255, int(viz_config.text_bg_opacity * 255)),
+                                outline=(*color, 200),
                                 width=1,
                             )
                             draw.text(
                                 (label_x, label_y),
                                 label,
-                                fill=(255, 255, 255),
+                                fill=color,
                                 font=font,
                             )
                             # box
@@ -305,10 +339,14 @@ def create_app() -> FastAPI:
             font_scale=0.5,
         )
         color_map = {k: (v[2], v[1], v[0]) for k, v in viz_config.color_map.items()}  # BGR->RGB
+        font_path = STATIC_DIR / "fonts" / "DejaVuSans.ttf"
         try:
-            font = ImageFont.truetype("DejaVuSans-Bold.ttf", 14)
+            font = ImageFont.truetype(str(font_path), 40)
         except Exception:
-            font = ImageFont.load_default()
+            try:
+                font = ImageFont.truetype("DejaVuSans-Bold.ttf", 40)
+            except Exception:
+                font = ImageFont.load_default()
 
         try:
             with fitz.open(pdf_path) as doc:
@@ -333,7 +371,7 @@ def create_app() -> FastAPI:
                             x1 = int(g.box.r * pix.width)
                             y1 = int(g.box.b * pix.height)
 
-                            label = str(c.chunk_type).upper()
+                            label = format_chunk_label(c.chunk_type)
                             text_bbox = draw.textbbox((0, 0), label, font=font)
                             text_w = text_bbox[2] - text_bbox[0]
                             text_h = text_bbox[3] - text_bbox[1]
@@ -345,14 +383,14 @@ def create_app() -> FastAPI:
                             ]
                             draw.rectangle(
                                 bg_rect,
-                                fill=(*color, int(viz_config.text_bg_opacity * 255)),
-                                outline=(0, 0, 0, 180),
+                                fill=(255, 255, 255, int(viz_config.text_bg_opacity * 255)),
+                                outline=(*color, 200),
                                 width=1,
                             )
                             draw.text(
                                 (label_x, label_y),
                                 label,
-                                fill=(255, 255, 255),
+                                fill=color,
                                 font=font,
                             )
                             for offset in range(viz_config.thickness):
