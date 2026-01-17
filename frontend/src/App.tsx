@@ -46,11 +46,28 @@ function App() {
   const [showAllViz, setShowAllViz] = useState(true)
   const [splitPercent, setSplitPercent] = useState(50)
   const [chatQuestion, setChatQuestion] = useState('')
-  const [chatMessages, setChatMessages] = useState<
-    { question: string; answer: string; sources?: unknown[] }[]
-  >([])
+  type GroundingBox = { l: number; t: number; r: number; b: number }
+  type GroundingRef = {
+    page: number
+    boxes: GroundingBox[]
+    chunkId?: string | number
+    chunkType?: string
+    label: string
+  }
+
+  type ChatMessage = {
+    question: string
+    answer: string
+    sources?: unknown[]
+    groundingRefs?: GroundingRef[]
+  }
+
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const layoutRef = useRef<HTMLDivElement | null>(null)
+  const [activeHighlights, setActiveHighlights] = useState<
+    Record<number, { boxes: GroundingBox[]; pulse: number }>
+  >({})
 
   const prettyJson = useMemo(
     () => (parsedData ? JSON.stringify(parsedData, null, 2) : ''),
@@ -217,8 +234,23 @@ function App() {
       }
       // Display-only: try to extract answer field from JSON, else show raw
       const displayAnswer = extractAnswerFromMessage(body.message)
+      const usedChunkIds = extractChunkIdsUsed(body.message)
+      const filteredSources =
+        usedChunkIds.size && body.sources
+          ? body.sources.filter((src) => {
+              if (!src || typeof src !== 'object') return false
+              const cid = (src as Record<string, unknown>).chunk_id
+              return cid !== undefined && cid !== null && usedChunkIds.has(String(cid))
+            })
+          : body.sources ?? []
+      const groundingRefs = filteredSources.length > 0 ? parseGroundingRefs(filteredSources) : []
       setChatMessages([
-        { question: chatQuestion, answer: displayAnswer, sources: body.sources },
+        {
+          question: chatQuestion,
+          answer: displayAnswer,
+          sources: filteredSources,
+          groundingRefs,
+        },
       ])
       const filtered = body.filtered_visualizations ?? []
       setFilteredVisualizations(filtered)
@@ -248,6 +280,129 @@ function App() {
 
   const getImageUrl = (src: string) =>
     src.startsWith('http') ? src : `${API_BASE}${src}`
+
+  const getPageIndexFromSrc = (src: string): number | null => {
+    const match = src.match(/page_(\d+)/)
+    return match ? Number(match[1]) : null
+  }
+
+  const extractChunkIdsUsed = (msg: string): Set<string> => {
+    const ids = new Set<string>()
+    if (!msg) return ids
+
+    const tryParse = (text: string) => {
+      try {
+        const parsed = JSON.parse(text)
+        const chunks = Array.isArray(parsed?.chunks_used) ? parsed.chunks_used : []
+        chunks.forEach((item: unknown) => {
+          if (item && typeof item === 'object' && 'chunk_id' in item) {
+            const cid = (item as Record<string, unknown>).chunk_id
+            if (cid !== undefined && cid !== null) ids.add(String(cid))
+          } else if (typeof item === 'string') {
+            ids.add(item)
+          }
+        })
+      } catch {
+        /* ignore */
+      }
+    }
+
+    if (msg.includes('```json')) {
+      const split = msg.split('```json')
+      const after = split[1] ?? ''
+      const endIdx = after.indexOf('```')
+      const candidate = endIdx >= 0 ? after.slice(0, endIdx).trim() : after.trim()
+      tryParse(candidate)
+    }
+    tryParse(msg.trim())
+    return ids
+  }
+
+  const parseGroundingRefs = (sourcesRaw: unknown[]): GroundingRef[] => {
+    const pageMap: Record<number, GroundingRef> = {}
+
+    sourcesRaw.forEach((src) => {
+      if (!src || typeof src !== 'object') return
+      const meta = src as Record<string, unknown>
+      const chunkType = typeof meta.chunk_type === 'string' ? meta.chunk_type : undefined
+      const chunkId = meta.chunk_id as string | number | undefined
+      const defaultPage =
+        typeof meta.page_number === 'number' && !Number.isNaN(meta.page_number)
+          ? meta.page_number
+          : undefined
+      const groundingRaw = meta.grounding_info
+      let groundingList: unknown[] = []
+      if (typeof groundingRaw === 'string') {
+        try {
+          const parsed = JSON.parse(groundingRaw)
+          if (Array.isArray(parsed)) groundingList = parsed
+        } catch {
+          /* ignore */
+        }
+      } else if (Array.isArray(groundingRaw)) {
+        groundingList = groundingRaw
+      } else if (groundingRaw && typeof groundingRaw === 'object') {
+        groundingList = [groundingRaw]
+      }
+
+      groundingList.forEach((g) => {
+        if (!g || typeof g !== 'object') return
+        const gObj = g as Record<string, any>
+        const page =
+          typeof gObj.page === 'number' && !Number.isNaN(gObj.page) ? gObj.page : defaultPage
+        if (page === undefined || page === null) return
+
+        const boxCandidate = gObj.box ?? gObj
+        const l = Number(boxCandidate.l ?? boxCandidate.left)
+        const t = Number(boxCandidate.t ?? boxCandidate.top)
+        const r = Number(boxCandidate.r ?? boxCandidate.right)
+        const b = Number(boxCandidate.b ?? boxCandidate.bottom)
+        if ([l, t, r, b].some((v) => Number.isNaN(v))) return
+
+        const cell =
+          typeof gObj.cell === 'string'
+            ? gObj.cell
+            : typeof gObj.cell_id === 'string'
+              ? gObj.cell_id
+              : undefined
+        const labelParts = [`Page ${page + 1}`]
+        if (chunkType) labelParts.push(chunkType)
+        if (cell) labelParts.push(cell)
+        const label = labelParts.join('. ')
+
+        if (!pageMap[page]) {
+          pageMap[page] = {
+            page,
+            boxes: [],
+            chunkId,
+            chunkType,
+            label,
+          }
+        }
+        pageMap[page].boxes.push({ l, t, r, b })
+      })
+    })
+
+    return Object.values(pageMap)
+  }
+
+  const triggerHighlight = (ref: GroundingRef) => {
+    if (!ref.boxes.length || ref.page === undefined || ref.page === null) return
+    setActiveHighlights((prev) => {
+      const pulse = (prev[ref.page]?.pulse ?? 0) + 1
+      const next = { ...prev, [ref.page]: { boxes: ref.boxes, pulse } }
+      setTimeout(() => {
+        setActiveHighlights((current) => {
+          const latest = current[ref.page]
+          if (!latest || latest.pulse !== pulse) return current
+          const copy = { ...current }
+          delete copy[ref.page]
+          return copy
+        })
+      }, 1200)
+      return next
+    })
+  }
 
   const onDividerMouseDown = (event: ReactMouseEvent<HTMLDivElement>) => {
     event.preventDefault()
@@ -379,11 +534,34 @@ function App() {
             <div className="viz-board">
               {(showAllViz ? visualizations : filteredVisualizations).length > 0 ? (
                 <div className="viz-grid">
-                  {(showAllViz ? visualizations : filteredVisualizations).map((src) => (
-                    <div className="viz-card" key={src}>
-                      <img src={getImageUrl(src)} alt="Visualization" />
-                    </div>
-                  ))}
+                  {(showAllViz ? visualizations : filteredVisualizations).map((src) => {
+                    const pageIdx = getPageIndexFromSrc(src)
+                    const highlight = pageIdx !== null ? activeHighlights[pageIdx] : undefined
+                    return (
+                      <div
+                        className={`viz-card ${highlight ? 'has-highlight' : ''}`}
+                        key={src}
+                      >
+                        <img src={getImageUrl(src)} alt="Visualization" />
+                        {highlight && (
+                          <div className="viz-overlay" key={highlight.pulse}>
+                            {highlight.boxes.map((box, idx) => (
+                              <span
+                                key={`${highlight.pulse}-${idx}`}
+                                className="viz-highlight"
+                                style={{
+                                  left: `${box.l * 100}%`,
+                                  top: `${box.t * 100}%`,
+                                  width: `${(box.r - box.l) * 100}%`,
+                                  height: `${(box.b - box.t) * 100}%`,
+                                }}
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
               ) : (
                 <p className="placeholder">
@@ -524,6 +702,25 @@ function App() {
                       <div className="chat-message" key={idx}>
                         <p className="chat-question">Q: {msg.question}</p>
                         <pre className="chat-answer">{msg.answer}</pre>
+                        {msg.groundingRefs && msg.groundingRefs.length > 0 && (
+                          <div className="sources-list">
+                            <p className="eyebrow muted">Visual reference for the answer:</p>
+                            <div className="source-pills">
+                              {msg.groundingRefs.map((ref, rIdx) => (
+                                <button
+                                  key={`${ref.page}-${rIdx}`}
+                                  className="source-pill"
+                                  type="button"
+                                  onClick={() => triggerHighlight(ref)}
+                                  title="Highlight on the visualization"
+                                >
+                                  <span>{ref.label}</span>
+                                  <span aria-hidden>→</span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ))
                   )}
