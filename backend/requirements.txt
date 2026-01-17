@@ -15,3 +15,4 @@ requests
 llama-parse
 llama-index-core
 llama-index-embeddings-openai
+llama-index-llms-openai

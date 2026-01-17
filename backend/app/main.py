@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import tempfile
@@ -20,7 +21,12 @@ from langchain_core.documents import Document
 
 # Third-party parser used elsewhere in the repo
 from agentic_doc.config import VisualizationConfig
-from .chunkers import ChunkingError, ChunkingStrategy, run_chunking_strategy
+from .chunkers import (
+    ChunkingError,
+    ChunkingStrategy,
+    run_chunking_strategy,
+    run_semantic,
+)
 
 # Constants
 BASE_DIR = Path(__file__).parent.parent
@@ -362,6 +368,29 @@ def create_app() -> FastAPI:
             urls.append(f"/static/{relative.as_posix()}")
         return urls
 
+    def collect_markdown_strings(val: Any) -> List[str]:
+        """Walk arbitrary nested structures to gather markdown fields."""
+        collected: List[str] = []
+
+        def walk(item: Any) -> None:
+            if item is None:
+                return
+            if isinstance(item, str):
+                return
+            if isinstance(item, list):
+                for sub in item:
+                    walk(sub)
+                return
+            if isinstance(item, dict):
+                md_val = item.get("markdown")
+                if isinstance(md_val, str):
+                    collected.append(md_val)
+                for sub in item.values():
+                    walk(sub)
+
+        walk(val)
+        return [c for c in collected if c]
+
     @app.post("/api/chat")
     async def chat(payload: ChatRequest) -> JSONResponse:
         api_key = require_openai_api_key()
@@ -443,11 +472,39 @@ Answer:"""
             raise HTTPException(status_code=500, detail=f"Failed to save upload: {exc}")
 
         try:
-            parsed_raw, viz_urls = run_chunking_strategy(temp_path, chunking_strategy)
-            payload = jsonable_encoder(parsed_raw)
+            semantic_task: asyncio.Task | None = None
             chosen_strategy = ChunkingStrategy.normalize(chunking_strategy)
+
+            # For non-semantic strategies, kick off a background semantic pass to harvest markdown.
+            if chosen_strategy is not ChunkingStrategy.SEMANTIC:
+                semantic_task = asyncio.create_task(
+                    asyncio.to_thread(run_semantic, temp_path)
+                )
+
+            parsed_raw, viz_urls = await asyncio.to_thread(
+                run_chunking_strategy, temp_path, chunking_strategy
+            )
+            payload = jsonable_encoder(parsed_raw)
             if chosen_strategy is ChunkingStrategy.SEMANTIC:
                 viz_urls = build_visualizations(temp_path, parsed_raw)
+
+            # If we ran the semantic fallback, attach its markdown so the UI can render it.
+            semantic_markdown = None
+            if semantic_task:
+                try:
+                    semantic_raw, _ = await semantic_task
+                    semantic_payload = jsonable_encoder(semantic_raw)
+                    md_parts = collect_markdown_strings(semantic_payload)
+                    if md_parts:
+                        semantic_markdown = "\n\n---\n\n".join(md_parts)
+                except Exception as exc:  # pragma: no cover - best-effort helper
+                    print(f"Semantic markdown fallback failed: {exc}")
+            if semantic_markdown:
+                if isinstance(payload, dict):
+                    payload = {**payload, "markdown": semantic_markdown}
+                else:
+                    payload = {"data": payload, "markdown": semantic_markdown}
+
             # Build embeddings once at parse-time for chat reuse
             documents = build_documents_from_parsed(payload)
             if documents:
@@ -471,8 +528,12 @@ Answer:"""
                 }
             )
         except ChunkingError as exc:
+            if "semantic_task" in locals() and semantic_task:
+                semantic_task.cancel()
             raise HTTPException(status_code=400, detail=str(exc))
         except Exception as exc:
+            if "semantic_task" in locals() and semantic_task:
+                semantic_task.cancel()
             raise HTTPException(status_code=500, detail=f"Failed to parse PDF: {exc}")
 
     return app
