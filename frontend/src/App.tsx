@@ -20,23 +20,37 @@ type ChunkingStrategy = 'semantic' | 'late' | 'llm' | 'hierarchical' | 'agentic'
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 
 const CHUNKING_OPTIONS: { value: ChunkingStrategy; label: string }[] = [
-  { value: 'semantic', label: 'Semantic (default)' },
-  { value: 'late', label: 'Late chunking (Jina)' },
-  { value: 'llm', label: 'LLM chunking (LlamaParse)' },
-  { value: 'hierarchical', label: 'Hierarchical (LlamaParse)' },
+  { value: 'agentic', label: 'Agentic' },
+  { value: 'semantic', label: 'Semantic' },
+  { value: 'late', label: 'Late chunking' },
+  { value: 'llm', label: 'LLM chunking' },
+  { value: 'hierarchical', label: 'Hierarchical' },
 ]
+
+const CHUNKING_DESCRIPTIONS: Record<ChunkingStrategy, string> = {
+  semantic:
+    'Keeps layout-aware chunks and preserves document structure. Good default that balances fidelity and chunk size.',
+  late:
+    'Embeds the full doc first, then chunks based on embedding similarity. Useful when you want semantic-first splits.',
+  llm:
+    'Uses LlamaParse with LLM-guided splitting to keep coherent passages. Great for narrative-heavy or long-form PDFs.',
+  hierarchical:
+    'Maintains parent/child nodes to mirror document hierarchy. Best when you need section context kept with children.',
+  agentic:
+    'Keeps layout-aware chunks and preserves document structure. Good default that balances fidelity and chunk size.',
+}
 
 function App() {
   const [file, setFile] = useState<File | null>(null)
   const [isDragging, setDragging] = useState(false)
-  const [isUploaderOpen, setUploaderOpen] = useState(false)
+  const [isUploaderOpen, setUploaderOpen] = useState(true)
   const [loading, setLoading] = useState(false)
   const [chatLoading, setChatLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [chunkingStrategy, setChunkingStrategy] =
-    useState<ChunkingStrategy>('semantic')
+    useState<ChunkingStrategy>('agentic')
   const [appliedChunkingStrategy, setAppliedChunkingStrategy] =
-    useState<ChunkingStrategy>('semantic')
+    useState<ChunkingStrategy>('agentic')
   const [chatError, setChatError] = useState<string | null>(null)
   const [parsedData, setParsedData] = useState<unknown | null>(null)
   const [panelMode, setPanelMode] = useState<'parse' | 'chat'>('parse')
@@ -105,11 +119,11 @@ function App() {
 
   const chunkingLabel = useMemo(() => {
     const labelMap: Record<string, string> = {
-      semantic: 'Semantic (default)',
-      agentic: 'Semantic (default)',
-      late: 'Late chunking (Jina)',
-      llm: 'LLM chunking (LlamaParse)',
-      hierarchical: 'Hierarchical (LlamaParse)',
+      semantic: 'Semantic',
+      agentic: 'Semantic',
+      late: 'Late chunking',
+      llm: 'LLM chunking',
+      hierarchical: 'Hierarchical',
     }
     return labelMap[appliedChunkingStrategy] ?? appliedChunkingStrategy
   }, [appliedChunkingStrategy])
@@ -133,7 +147,6 @@ function App() {
     const selected = event.target.files?.[0] ?? null
     const valid = handleFileSelect(selected)
     if (valid) {
-      setUploaderOpen(false)
       submit(valid)
     }
     event.target.value = ''
@@ -146,7 +159,6 @@ function App() {
     const dropped = event.dataTransfer.files?.[0]
     const valid = handleFileSelect(dropped ?? null)
     if (valid) {
-      setUploaderOpen(false)
       submit(valid)
     }
   }
@@ -163,6 +175,7 @@ function App() {
     const fileToUpload = targetFile ?? file
     if (!fileToUpload) {
       setError('Choose a PDF to parse.')
+      setUploaderOpen(true)
       return
     }
     setLoading(true)
@@ -177,9 +190,12 @@ function App() {
     setActiveHighlights({})
     setFile(fileToUpload)
 
+    const effectiveStrategy =
+      chunkingStrategy === 'agentic' ? 'semantic' : chunkingStrategy
+
     const form = new FormData()
     form.append('file', fileToUpload)
-    form.append('chunking_strategy', chunkingStrategy)
+    form.append('chunking_strategy', effectiveStrategy)
 
     try {
       const res = await fetch(`${API_BASE}/api/parse`, {
@@ -199,6 +215,7 @@ function App() {
       setVisualizations(body?.visualizations ?? [])
       const returnedStrategy = body?.chunking_strategy ?? chunkingStrategy
       setAppliedChunkingStrategy(returnedStrategy as ChunkingStrategy)
+      setUploaderOpen(false)
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Unexpected error occurred.'
@@ -531,11 +548,9 @@ function App() {
     <div className={pageClassName}>
       <header className="hero">
         <div>
-          <p className="eyebrow">Grounded QA — raw ingest</p>
-          <h1>Upload a PDF and inspect the parser output</h1>
+          <p className="eyebrow">Grounded QA — doc ingest</p>
+          <h1>Knowledge extraction from PDFs</h1>
           <p className="sub">
-            Uses the existing <code>agentic_doc.parse</code> flow; JSON,
-            markdown, and visualization previews.
           </p>
         </div>
       </header>
@@ -582,8 +597,8 @@ function App() {
           >
             <div className="panel-header">
               <div>
-                <p className="eyebrow">Visualizations</p>
-                <h3>Page overlays</h3>
+                <p className="eyebrow">Visual previews</p>
+                <h3>Chunk overlays</h3>
                 {file && <p className="file-chip">{file.name}</p>}
               </div>
               {filteredVisualizations.length > 0 && (
@@ -593,14 +608,14 @@ function App() {
                     checked={showAllViz}
                     onChange={(e) => setShowAllViz(e.target.checked)}
                   />
-                  Show all chunk visualizations
+                  Show all page overlays
                 </label>
               )}
               <p className="viz-count">{vizCountLabel}</p>
             </div>
             <div className="viz-board">
               {vizLoading ? (
-                <p className="placeholder">Loading filtered visualizations…</p>
+                <p className="placeholder">Fetching referenced overlays…</p>
               ) : displayedVisualizations.length > 0 ? (
                 <div className="viz-grid">
                   {displayedVisualizations.map((src) => {
@@ -640,8 +655,8 @@ function App() {
               ) : (
                 <p className="placeholder">
                   {showAllViz
-                    ? 'Upload to view page visualizations.'
-                    : 'Ask a question to view referenced chunk visualizations.'}
+                    ? 'Upload a PDF to see page overlays.'
+                    : 'Ask a question to reveal the referenced overlays.'}
                 </p>
               )}
             </div>
@@ -678,10 +693,10 @@ function App() {
               <>
                 <div className="panel-header">
                   <div>
-                    <p className="eyebrow">Parser output</p>
-                    <h3>Pretty-printed response</h3>
+                    <p className="eyebrow">Parse output</p>
+                    <h3>Structured response</h3>
                     <p className="eyebrow muted">
-                      Chunking: {chunkingLabel}
+                      Chunking strategy: {chunkingLabel}
                     </p>
                   </div>
                   <div className="viewer-actions">
@@ -721,9 +736,7 @@ function App() {
                     prettyJson ? (
                       <pre>{prettyJson}</pre>
                     ) : (
-                      <p className="placeholder">
-                        Upload a PDF to view the raw parse output.
-                      </p>
+                      <p className="placeholder">Upload a PDF to see the parsed payload.</p>
                     )
                   ) : markdownText ? (
                     <div className="markdown-body">
@@ -735,9 +748,7 @@ function App() {
                       </ReactMarkdown>
                     </div>
                   ) : (
-                    <p className="placeholder">
-                      No markdown found in the parser response.
-                    </p>
+                    <p className="placeholder">No markdown was returned for this parse.</p>
                   )}
                 </div>
               </>
@@ -745,15 +756,15 @@ function App() {
               <div className="chat-panel">
                 <div className="panel-header">
                   <div>
-                    <p className="eyebrow">RAG chat</p>
-                    <h3>Ask questions about this PDF</h3>
+                    <p className="eyebrow">Grounded answers</p>
+                    <h3>Ask about this PDF</h3>
                   </div>
                 </div>
                 {chatError && <div className="alert error">{chatError}</div>}
                 <div className="chat-box">
                   <textarea
                     className="chat-input"
-                    placeholder="Ask a question about the parsed document..."
+                    placeholder="Ask something about the parsed PDF…"
                     value={chatQuestion}
                     onChange={(e) => setChatQuestion(e.target.value)}
                     disabled={chatLoading}
@@ -763,14 +774,12 @@ function App() {
                     onClick={submitChat}
                     disabled={chatLoading}
                   >
-                    {chatLoading ? 'Asking…' : 'Send'}
+                    {chatLoading ? 'Asking…' : 'Ask'}
                   </button>
                 </div>
                 <div className="chat-messages">
                   {chatMessages.length === 0 ? (
-                    <p className="placeholder">
-                      Ask a question to see the model response.
-                    </p>
+                    <p className="placeholder">Ask to see a grounded answer.</p>
                   ) : (
                     chatMessages.map((msg, idx) => (
                       <div className="chat-message" key={idx}>
@@ -778,7 +787,7 @@ function App() {
                         <pre className="chat-answer">{msg.answer}</pre>
                         {msg.groundingRefs && msg.groundingRefs.length > 0 && (
                           <div className="sources-list">
-                            <p className="eyebrow muted">Visual reference for the answer:</p>
+                            <p className="eyebrow muted">Visual reference for this answer</p>
                             <div className="source-pills">
                               {msg.groundingRefs.map((ref, rIdx) => (
                                 <button
@@ -821,62 +830,92 @@ function App() {
               event.stopPropagation()
             }}
           >
-            <p className="modal-title">Upload a PDF</p>
-            <p className="modal-sub">
-              Drag and drop a PDF to start parsing automatically, or click to browse.
-            </p>
-            <div className="option-row column">
-              <label className="option-label" htmlFor="chunking-select">
-                Chunking strategy
-              </label>
-              <select
-                id="chunking-select"
-                value={chunkingStrategy}
-                onChange={(e) =>
-                  setChunkingStrategy(e.target.value as ChunkingStrategy)
-                }
-                className="select-control"
-              >
-                {CHUNKING_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-              <p className="option-help">
-                Semantic keeps layout-aware chunks. Late embeds full doc first.
-                LLM uses LlamaParse + LLM-guided splits. Hierarchical keeps
-                parent/child nodes.
-              </p>
-            </div>
-            <div
-              className={`dropzone ${isDragging ? 'dragging' : ''}`}
-              onDragOver={onDragOver}
-              onDragLeave={onDragLeave}
-              onDrop={onDrop}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <p className="drop-title">Drop your PDF here</p>
-              <p className="drop-sub">
-                We will blur the background and start parsing right away.
-              </p>
-              {file ? (
-                <p className="file-name">Selected: {file.name}</p>
-              ) : (
-                <p className="file-name muted">No file selected yet</p>
-              )}
-            </div>
-            <div className="modal-actions">
-              <button
-                className="secondary"
-                onClick={() => {
-                  setDragging(false)
-                  setUploaderOpen(false)
-                }}
-              >
-                Close
-              </button>
-            </div>
+            {loading ? (
+              <div className="upload-loading">
+                <p className="modal-title">Processing PDF</p>
+                <p className="modal-sub">Hold tight while we parse and prep your overlays.</p>
+                <div className="loading-steps">
+                  <div className="loading-step done">
+                    <span className="step-dot" aria-hidden />
+                    <div className="step-text">
+                      <p className="step-title">Upload received</p>
+                      <p className="step-sub">File transferred securely.</p>
+                    </div>
+                    <span className="step-check" aria-hidden>✓</span>
+                  </div>
+                  <div className="loading-step active">
+                    <span className="step-dot" aria-hidden />
+                    <div className="step-text">
+                      <p className="step-title">Parsing & chunking</p>
+                      <p className="step-sub">Extracting text and building chunks.</p>
+                    </div>
+                    <div className="mini-spinner" aria-hidden />
+                  </div>
+                  <div className="loading-step pending">
+                    <span className="step-dot" aria-hidden />
+                    <div className="step-text">
+                      <p className="step-title">Visual overlays</p>
+                      <p className="step-sub">Preparing page previews.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
+                <p className="modal-title">Add a PDF</p>
+                <p className="modal-sub">Drop a PDF to parse instantly, or click to browse.</p>
+                <div className="option-row column">
+                  <label className="option-label" htmlFor="chunking-select">
+                    Chunking strategy
+                  </label>
+                  <select
+                    id="chunking-select"
+                    value={chunkingStrategy}
+                    onChange={(e) =>
+                      setChunkingStrategy(e.target.value as ChunkingStrategy)
+                    }
+                    className="select-control"
+                    disabled={loading}
+                  >
+                    {CHUNKING_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="option-help">
+                    {CHUNKING_DESCRIPTIONS[chunkingStrategy]}
+                  </p>
+                </div>
+                <div
+                  className={`dropzone ${isDragging ? 'dragging' : ''} ${loading ? 'loading' : ''}`}
+                  onDragOver={onDragOver}
+                  onDragLeave={onDragLeave}
+                  onDrop={onDrop}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <p className="drop-title">Drop your PDF here</p>
+                  <p className="drop-sub">We’ll start parsing the moment it lands.</p>
+                  {file ? (
+                    <p className="file-name">Selected: {file.name}</p>
+                  ) : (
+                    <p className="file-name muted">No file selected yet</p>
+                  )}
+                </div>
+                <div className="modal-actions">
+                  <button
+                    className="secondary"
+                    onClick={() => {
+                      setDragging(false)
+                      setUploaderOpen(false)
+                    }}
+                    disabled={loading}
+                  >
+                    Close
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
