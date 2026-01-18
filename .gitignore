@@ -44,3 +44,5 @@ agentic_rag/
 .env.local
 
 .cursor/
+
+gitenv/

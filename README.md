@@ -11,6 +11,7 @@ Minimal FastAPI + React/Vite UI to upload a PDF, run `agentic_doc.parse`, and vi
    - `JINA_API_KEY` from https://jina.ai/embeddings
    - `LLAMA_CLOUD_API_KEY` from https://cloud.llamaindex.ai/project/2af49bdc-ac33-46d1-a7e2-0476401068a2/api-key
    - `VISION_AGENT_API_KEY` from https://va.landing.ai/my/settings/api-key
+   - `EVAL_MODEL` (default `gpt-4o-mini`) for the LLM judge scoring RAG answers
 5. Run: `uvicorn app.main:app --reload --port 8000`
    - Health check: `GET /healthz`
    - Parse: `POST /api/parse` (multipart/form-data, field `file`, PDF only, ~25MB cap)
