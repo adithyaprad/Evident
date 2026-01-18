@@ -6,6 +6,7 @@ from pathlib import Path
 
 import fitz  # PyMuPDF
 import requests
+from dotenv import load_dotenv
 from llama_parse import LlamaParse
 from llama_index.core.ingestion import IngestionPipeline
 from llama_index.core.node_parser import (
@@ -15,6 +16,11 @@ from llama_index.core.node_parser import (
 from llama_index.core.text_splitter import SentenceSplitter
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.core.extractors import TitleExtractor, KeywordExtractor
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+# Ensure agentic_doc-dependent keys (e.g., VISION_AGENT_API_KEY) are loaded from .env
+load_dotenv(BASE_DIR / ".env", override=True)
+load_dotenv(BASE_DIR / "app" / ".env", override=True)
 
 # Local parse fallback
 from agentic_doc.parse import parse
