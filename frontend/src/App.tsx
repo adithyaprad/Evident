@@ -490,6 +490,14 @@ function App() {
   }
 
   const pageClassName = `page ${isUploaderOpen ? 'modal-open' : ''}`
+  const displayedVisualizations = showAllViz ? visualizations : filteredVisualizations
+  const totalVisualizations = visualizations.length
+  const vizCountLabel =
+    totalVisualizations === 0
+      ? '—'
+      : showAllViz || filteredVisualizations.length === 0
+        ? `${totalVisualizations} page(s)`
+        : `${displayedVisualizations.length} / ${totalVisualizations} page(s)`
 
   const extractAnswerFromMessage = (msg: string) => {
     if (!msg) return ''
@@ -588,16 +596,14 @@ function App() {
                   Show all chunk visualizations
                 </label>
               )}
-              <p className="viz-count">
-                {visualizations.length > 0 ? `${visualizations.length} page(s)` : '—'}
-              </p>
+              <p className="viz-count">{vizCountLabel}</p>
             </div>
             <div className="viz-board">
               {vizLoading ? (
                 <p className="placeholder">Loading filtered visualizations…</p>
-              ) : (showAllViz ? visualizations : filteredVisualizations).length > 0 ? (
+              ) : displayedVisualizations.length > 0 ? (
                 <div className="viz-grid">
-                  {(showAllViz ? visualizations : filteredVisualizations).map((src) => {
+                  {displayedVisualizations.map((src) => {
                     const pageIdx = getPageIndexFromSrc(src)
                     const highlight = pageIdx !== null ? activeHighlights[pageIdx] : undefined
                     return (
