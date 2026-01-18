@@ -71,11 +71,26 @@ function App() {
     label: string
   }
 
+  type EvaluationMetric = {
+    score: number
+    reason?: string
+  }
+
+  type EvaluationResult = {
+    contextRelevance: EvaluationMetric
+    faithfulness: EvaluationMetric
+    answerRelevance: EvaluationMetric
+    answerCorrectness: EvaluationMetric
+    overallSummary?: string
+  }
+
   type ChatMessage = {
     question: string
     answer: string
     sources?: unknown[]
     groundingRefs?: GroundingRef[]
+    evaluation?: EvaluationResult | null
+    evaluationStatus?: 'idle' | 'loading' | 'done' | 'error'
   }
 
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
@@ -258,6 +273,95 @@ function App() {
     }
   }
 
+  const normalizeEvaluation = (raw: unknown): EvaluationResult | null => {
+    if (!raw || typeof raw !== 'object') return null
+    const obj = raw as Record<string, any>
+    const toCamel = (key: string) => key.replace(/_([a-z])/g, (_, c) => c.toUpperCase())
+
+    const pickMetric = (key: string): EvaluationMetric | null => {
+      const candidate = obj[key] ?? obj[toCamel(key)]
+      if (candidate === undefined || candidate === null) return null
+      let score = 0
+      let reason = ''
+
+      if (typeof candidate === 'object') {
+        const asObj = candidate as Record<string, any>
+        const rawScore =
+          asObj.score ?? asObj.value ?? asObj.percent ?? asObj.percentage ?? asObj.score_percent
+        const parsed = Number(rawScore)
+        if (!Number.isNaN(parsed)) {
+          score = Math.max(0, Math.min(100, Math.round(parsed)))
+        }
+        const reasonCandidate =
+          asObj.reason ?? asObj.explanation ?? asObj.notes ?? asObj.rationale ?? ''
+        if (typeof reasonCandidate === 'string') {
+          reason = reasonCandidate
+        }
+      } else if (typeof candidate === 'number') {
+        score = Math.max(0, Math.min(100, Math.round(candidate)))
+      } else if (typeof candidate === 'string') {
+        const parsed = Number(candidate)
+        if (!Number.isNaN(parsed)) {
+          score = Math.max(0, Math.min(100, Math.round(parsed)))
+        } else {
+          reason = candidate
+        }
+      }
+
+      return { score, reason }
+    }
+
+    const contextRelevance = pickMetric('context_relevance')
+    const faithfulness = pickMetric('faithfulness')
+    const answerRelevance = pickMetric('answer_relevance')
+    const answerCorrectness = pickMetric('answer_correctness')
+    const overallSummaryRaw = obj.overall_summary ?? obj.summary
+    const overallSummary =
+      typeof overallSummaryRaw === 'string' && overallSummaryRaw.trim()
+        ? overallSummaryRaw.trim()
+        : undefined
+
+    if (!contextRelevance && !faithfulness && !answerRelevance && !answerCorrectness) {
+      return null
+    }
+
+    return {
+      contextRelevance: contextRelevance ?? { score: 0, reason: '' },
+      faithfulness: faithfulness ?? { score: 0, reason: '' },
+      answerRelevance: answerRelevance ?? { score: 0, reason: '' },
+      answerCorrectness: answerCorrectness ?? { score: 0, reason: '' },
+      overallSummary,
+    }
+  }
+
+  const runEvaluation = async (question: string, answer: string) => {
+    if (!question || !answer) return
+    try {
+      const res = await fetch(`${API_BASE}/api/chat/evaluate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, answer }),
+      })
+      if (!res.ok) {
+        throw new Error(`Eval failed with status ${res.status}`)
+      }
+      const body = (await res.json()) as { evaluation?: unknown }
+      const evaluation = normalizeEvaluation(body.evaluation)
+      setChatMessages((prev) =>
+        prev.map((msg, idx) =>
+          idx === 0
+            ? { ...msg, evaluation, evaluationStatus: evaluation ? 'done' : 'error' }
+            : msg
+        )
+      )
+    } catch (err) {
+      console.error('Evaluation error', err)
+      setChatMessages((prev) =>
+        prev.map((msg, idx) => (idx === 0 ? { ...msg, evaluationStatus: 'error' } : msg))
+      )
+    }
+  }
+
   const submitChat = async () => {
     if (!parsedData) {
       setChatError('Parse a PDF first.')
@@ -290,6 +394,7 @@ function App() {
         sources?: unknown[]
         filtered_visualizations?: string[]
         chunk_ids?: (string | number)[]
+        evaluation?: unknown
       }
       // Display-only: try to extract answer field from JSON, else show raw
       const displayAnswer = extractAnswerFromMessage(body.message)
@@ -315,8 +420,11 @@ function App() {
           answer: displayAnswer,
           sources: filteredSources,
           groundingRefs,
+          evaluation: null,
+          evaluationStatus: 'loading',
         },
       ])
+      void runEvaluation(chatQuestion, displayAnswer)
       const filteredFromBody = body.filtered_visualizations ?? []
       if (filteredFromBody.length > 0) {
         setFilteredVisualizations(filteredFromBody)
@@ -324,10 +432,8 @@ function App() {
       } else {
         const chunkIdsArray = effectiveChunkIds.size > 0 ? Array.from(effectiveChunkIds) : []
         setFilteredVisualizations([])
-        if (chunkIdsArray.length === 0) {
-          setShowAllViz(true)
-        } else {
-          setShowAllViz(false)
+        setShowAllViz(false)
+        if (chunkIdsArray.length > 0) {
           void fetchFilteredVisualizations(chunkIdsArray)
         }
       }
@@ -542,6 +648,26 @@ function App() {
     const parsedRaw = tryParse(msg.trim())
     if (parsedRaw) return parsedRaw
     return msg
+  }
+
+  const renderEvaluationMetric = (label: string, metric?: EvaluationMetric) => {
+    const rawScore = metric?.score ?? 0
+    const safeScore = Number.isFinite(rawScore)
+      ? Math.max(0, Math.min(100, Math.round(rawScore)))
+      : 0
+    const reason = metric?.reason?.trim() || 'No rationale provided.'
+    return (
+      <div className="eval-metric" key={label}>
+        <div className="eval-metric-top">
+          <span>{label}</span>
+          <span className="eval-score">{safeScore}%</span>
+        </div>
+        <div className="eval-bar">
+          <div className="eval-bar-fill" style={{ width: `${safeScore}%` }} />
+        </div>
+        <p className="eval-reason">{reason}</p>
+      </div>
+    )
   }
 
   return (
@@ -803,6 +929,40 @@ function App() {
                               ))}
                             </div>
                           </div>
+                        )}
+                        {msg.evaluationStatus === 'loading' && (
+                          <p className="evaluation-loading">Scoring answer…</p>
+                        )}
+                        {msg.evaluation && (
+                          <div className="evaluation-card">
+                            <div className="evaluation-header">
+                              <div>
+                                <p className="eyebrow">Evaluation Engine</p>
+                                <h4>Answer quality</h4>
+                              </div>
+                              {msg.evaluation.overallSummary && (
+                                <p className="evaluation-summary">{msg.evaluation.overallSummary}</p>
+                              )}
+                            </div>
+                            <div className="evaluation-grid">
+                              {renderEvaluationMetric(
+                                'Context relevance',
+                                msg.evaluation.contextRelevance
+                              )}
+                              {renderEvaluationMetric('Faithfulness Score', msg.evaluation.faithfulness)}
+                              {renderEvaluationMetric(
+                                'Answer relevance',
+                                msg.evaluation.answerRelevance
+                              )}
+                              {renderEvaluationMetric(
+                                'Answer correctness',
+                                msg.evaluation.answerCorrectness
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        {msg.evaluationStatus === 'error' && !msg.evaluation && (
+                          <p className="evaluation-error">Evaluation unavailable right now.</p>
                         )}
                       </div>
                     ))
