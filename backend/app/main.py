@@ -37,6 +37,7 @@ VIZ_DIR = STATIC_DIR / "visualizations"
 MAX_FILE_BYTES = 25 * 1024 * 1024  # 25 MB safeguard
 EMBEDDING_MODEL = "text-embedding-3-small"
 CHAT_MODEL = "gpt-5-nano"
+DEFAULT_EVAL_MODEL = "gpt-4o-mini"
 
 
 class ParseResponse(BaseModel):
@@ -58,6 +59,11 @@ class ChatVisualizationRequest(BaseModel):
 
     chunk_ids: List[str]
 
+class EvaluateRequest(BaseModel):
+    """Payload to score an existing answer."""
+
+    question: str
+    answer: str
 
 def ensure_upload_dir() -> Path:
     DEFAULT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -105,6 +111,12 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+    )
+
+    eval_model_name = (
+        os.getenv("EVAL_MODEL")
+        or os.getenv("OPENAI_EVAL_MODEL")
+        or DEFAULT_EVAL_MODEL
     )
 
     app.mount(
@@ -435,6 +447,127 @@ def create_app() -> FastAPI:
         walk(val)
         return [c for c in collected if c]
 
+    def extract_json_block(text: str) -> str | None:
+        """Extract JSON substring, preferring fenced blocks."""
+        if not text:
+            return None
+        if "```json" in text:
+            try:
+                return text.split("```json", 1)[1].split("```", 1)[0].strip()
+            except Exception:
+                pass
+        try:
+            json.loads(text)
+            return text
+        except Exception:
+            return None
+
+    def extract_answer_text(content: str) -> str:
+        """Best-effort parsing to pull 'answer' from LLM JSON, else fallback to raw."""
+        if not content:
+            return ""
+
+        def try_parse(payload: str) -> str | None:
+            try:
+                data = json.loads(payload)
+                if isinstance(data, dict):
+                    ans = data.get("answer")
+                    if isinstance(ans, str):
+                        return ans
+            except Exception:
+                return None
+            return None
+
+        fenced = extract_json_block(content)
+        if fenced:
+            parsed = try_parse(fenced)
+            if parsed:
+                return parsed
+        parsed = try_parse(content)
+        if parsed:
+            return parsed
+        return content.strip()
+
+    def normalize_metric(raw: Any) -> dict[str, Any]:
+        """Normalize metric payload to {score:int, reason:str}."""
+        score_val = None
+        reason_val = ""
+        if isinstance(raw, dict):
+            score_val = raw.get("score") or raw.get("value") or raw.get("percent") or raw.get("percentage")
+            reason_candidate = raw.get("reason") or raw.get("explanation") or raw.get("notes") or ""
+            if isinstance(reason_candidate, str):
+                reason_val = reason_candidate
+        elif isinstance(raw, (int, float, str)):
+            score_val = raw
+
+        try:
+            score_num = int(round(float(score_val))) if score_val is not None else None
+        except Exception:
+            score_num = None
+
+        if score_num is None:
+            score_num = 0
+        score_num = max(0, min(100, score_num))
+
+        return {"score": score_num, "reason": reason_val}
+
+    def evaluate_answer(question: str, answer: str, context: str) -> dict[str, Any] | None:
+        """Call OpenAI to judge the RAG answer across four metrics."""
+        if not question or not answer or not context:
+            return None
+
+        api_key = require_openai_api_key()
+        llm = ChatOpenAI(
+            model=eval_model_name,
+            temperature=0,
+            openai_api_key=api_key,
+        )
+
+        prompt = f"""
+You are an impartial evaluator for a retrieval-augmented generation (RAG) system. Score each metric from 0-100 (integers only). Be strict: penalize hallucinations, missing context, or off-topic answers.
+
+Definitions:
+- Context relevance: Retrieved context directly relates to the query; irrelevant or noisy chunks lower this.
+- Faithfulness: The answer is grounded in the provided context with no hallucinations; every claim is supported.
+- Answer relevance: The answer directly addresses the user question and leverages the provided context.
+- Answer correctness: The answer is factually correct given the context; contradictions or fabricated facts lower the score.
+
+Respond ONLY with JSON shaped exactly as:
+{{
+  "context_relevance": {{"score": 0, "reason": "..."}},
+  "faithfulness": {{"score": 0, "reason": "..."}},
+  "answer_relevance": {{"score": 0, "reason": "..."}},
+  "answer_correctness": {{"score": 0, "reason": "..."}},
+  "overall_summary": "one sentence summary"
+}}
+
+Inputs to grade:
+Question: {question}
+Answer: {answer}
+Context:
+{context}
+"""
+
+        response = llm.invoke(prompt)
+        raw_content = response.content if isinstance(response.content, str) else str(response.content)
+
+        json_block = extract_json_block(raw_content)
+        if not json_block:
+            return None
+        try:
+            parsed = json.loads(json_block)
+        except Exception:
+            return None
+
+        result = {
+            "context_relevance": normalize_metric(parsed.get("context_relevance")),
+            "faithfulness": normalize_metric(parsed.get("faithfulness")),
+            "answer_relevance": normalize_metric(parsed.get("answer_relevance")),
+            "answer_correctness": normalize_metric(parsed.get("answer_correctness")),
+            "overall_summary": parsed.get("overall_summary") or parsed.get("summary") or "",
+        }
+        return result
+
     @app.post("/api/chat")
     async def chat(payload: ChatRequest) -> JSONResponse:
         api_key = require_openai_api_key()
@@ -483,11 +616,6 @@ Answer:"""
         # Derive chunk ids: prefer llm response, fallback to retrieved docs
         chunk_ids_from_llm = extract_chunk_ids_from_llm_response(response.content)
         allowed_chunk_ids: Set[str] = set(chunk_ids_from_llm)
-        if not allowed_chunk_ids:
-            for doc in retrieved_docs:
-                cid = doc.metadata.get("chunk_id")
-                if cid:
-                    allowed_chunk_ids.add(str(cid))
 
         return JSONResponse(
             content={
@@ -496,6 +624,26 @@ Answer:"""
                 "chunk_ids": sorted(allowed_chunk_ids),
             }
         )
+
+    @app.post("/api/chat/evaluate")
+    async def chat_evaluate(payload: EvaluateRequest) -> JSONResponse:
+        """Score an answer without delaying chat response."""
+        api_key = require_openai_api_key()
+        vector_store: Chroma | None = getattr(app.state, "vector_store", None)
+        if vector_store is None:
+            raise HTTPException(status_code=400, detail="No vector store available. Parse a PDF first.")
+
+        retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+        retrieved_docs = retriever.invoke(payload.question)
+        context_blob = build_context_blob(retrieved_docs)
+
+        try:
+            evaluation = evaluate_answer(payload.question, payload.answer, context_blob)
+        except Exception as exc:  # pragma: no cover - best effort
+            print(f"Evaluation failed: {exc}")
+            raise HTTPException(status_code=500, detail="Evaluation failed.")
+
+        return JSONResponse(content={"evaluation": evaluation})
 
     @app.post("/api/chat/visualizations")
     async def chat_visualizations(payload: ChatVisualizationRequest) -> JSONResponse:
