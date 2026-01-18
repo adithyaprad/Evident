@@ -464,6 +464,12 @@
   white-space: nowrap;
 }
 
+.viz-count {
+  margin: 0;
+  font-size: 13px;
+  color: #475569;
+}
+
 .viz-board {
   border: 1px solid #e5e7eb;
   border-radius: 10px;

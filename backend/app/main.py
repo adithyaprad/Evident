@@ -341,10 +341,10 @@ def create_app() -> FastAPI:
         color_map = {k: (v[2], v[1], v[0]) for k, v in viz_config.color_map.items()}  # BGR->RGB
         font_path = STATIC_DIR / "fonts" / "DejaVuSans.ttf"
         try:
-            font = ImageFont.truetype(str(font_path), 40)
+            font = ImageFont.truetype(str(font_path), 15)
         except Exception:
             try:
-                font = ImageFont.truetype("DejaVuSans-Bold.ttf", 40)
+                font = ImageFont.truetype("DejaVuSans-Bold.ttf", 15)
             except Exception:
                 font = ImageFont.load_default()
 

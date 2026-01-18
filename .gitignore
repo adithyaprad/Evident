@@ -42,3 +42,5 @@ agentic_rag/
 #environment variables
 .env
 .env.local
+
+.cursor/
