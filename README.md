@@ -1,8 +1,8 @@
-# GroundRAG
+# Evident
 
-GroundRAG is a document intelligence web application designed to make retrieval-augmented generation (RAG) systems transparent, grounded, and measurable.
+Evident is a document intelligence web application designed to make retrieval-augmented generation (RAG) systems transparent, grounded, and measurable.
 
-Instead of treating RAG as a black box, GroundRAG exposes how documents are parsed and chunked, shows exactly which parts of a document are used to answer a question, and evaluates answer quality using explicit metrics. The goal is to make RAG systems easier to inspect, debug, and improve.
+Instead of treating RAG as a black box, Evident exposes how documents are parsed and chunked, shows exactly which parts of a document are used to answer a question, and evaluates answer quality using explicit metrics. The goal is to make RAG systems easier to inspect, debug, and improve.
 
 ---
 
@@ -29,7 +29,7 @@ This project is intentionally scoped as a **system exploration tool**, not a pro
 
 ## Architecture overview
 
-GroundRAG consists of:
+Evident consists of:
 
 * A **FastAPI backend** responsible for parsing, chunking, retrieval, grounding, and evaluation
 * A **React/Vite frontend** for document upload, inspection, chat, and visualization
@@ -133,7 +133,7 @@ These tradeoffs are intentional to keep the system focused on inspection and ite
 
 ## When this project is useful
 
-GroundRAG is useful if you want to:
+Evident is useful if you want to:
 
 * understand why a RAG system produced a specific answer
 * compare chunking strategies on real documents
@@ -144,4 +144,4 @@ GroundRAG is useful if you want to:
 
 ## Summary
 
-GroundRAG treats RAG as a system that needs observability. By making chunking, grounding, and evaluation explicit, it turns RAG from a black box into something that can be inspected, reasoned about, and improved.
+Evident treats RAG as a system that needs observability. By making chunking, grounding, and evaluation explicit, it turns RAG from a black box into something that can be inspected, reasoned about, and improved.
