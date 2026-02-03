@@ -1,5 +1,7 @@
 # Evident
 
+### Case study - https://www.adithyapradeep.com/#projects/evident
+
 Evident is a document intelligence web application designed to make retrieval-augmented generation (RAG) systems transparent, grounded, and measurable.
 
 Instead of treating RAG as a black box, Evident exposes how documents are parsed and chunked, shows exactly which parts of a document are used to answer a question, and evaluates answer quality using explicit metrics. The goal is to make RAG systems easier to inspect, debug, and improve.
